@@ -84,6 +84,8 @@ pub struct Doc {
     md: String,
     /// The directory relative links are relative to.
     pub base: Option<PathBuf>,
+    /// Where links starting with `/` start from: the top of the repository.
+    pub site: Option<PathBuf>,
     headings: Vec<Heading>,
     links: Vec<String>,
     code_blocks: Vec<CodeBlock>,
@@ -132,6 +134,7 @@ impl Doc {
         Doc {
             md,
             base: std::env::current_dir().ok(),
+            site: None,
             headings: Vec::new(),
             links: Vec::new(),
             code_blocks: Vec::new(),
@@ -203,7 +206,14 @@ impl Doc {
             return;
         }
         let pos = (!self.lines.is_empty()).then(|| self.rendered_pos(self.top));
-        let rendered = render(&self.md, width, theme, false, self.base.as_deref());
+        let rendered = render(
+            &self.md,
+            width,
+            theme,
+            false,
+            self.base.as_deref(),
+            self.site.as_deref(),
+        );
         self.lines = rendered.lines;
         self.headings = rendered.headings;
         self.links = rendered.links;

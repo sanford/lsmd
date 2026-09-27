@@ -260,7 +260,7 @@ impl App<'_> {
             return;
         }
         let base = doc.base.clone().unwrap_or_default();
-        let target = base.join(&path);
+        let target = render::local_target(&base, doc.site.as_deref(), &path);
         if !target.exists() {
             self.flash = Some(format!("Not found: {path}"));
             return;

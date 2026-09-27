@@ -17,7 +17,7 @@ use std::thread;
 use std::time::SystemTime;
 
 /// Bump when what's stored changes, to rebuild old indexes.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct FileLinks {
@@ -42,6 +42,9 @@ pub struct Index {
     /// For each file, the files that link to it, sorted.
     backlinks: HashMap<String, Vec<String>>,
     root: String,
+    /// The root's path within its repository ("" at the top of one), for
+    /// links starting with `/`.
+    prefix: String,
     /// Where the index is kept between runs.
     cache: Option<PathBuf>,
 }
@@ -58,17 +61,20 @@ impl Index {
     }
 
     /// Re-indexes the file at `rel` (under the root, at `path`) after it
-    /// changed or was deleted, and saves the index.
-    pub fn refresh(&mut self, rel: &str, path: &Path) {
+    /// changed or was deleted. Returns whether anything changed; if so,
+    /// [`Index::commit`] once the batch is done.
+    pub fn refresh(&mut self, rel: &str, path: &Path) -> bool {
         if path.is_file() {
-            let (links, changed) = read(path, rel, self.files.remove(rel));
+            let (links, changed) = read(path, rel, &self.prefix, self.files.remove(rel));
             self.files.insert(rel.to_string(), links);
-            if !changed {
-                return;
-            }
-        } else if self.files.remove(rel).is_none() {
-            return;
+            changed
+        } else {
+            self.files.remove(rel).is_some()
         }
+    }
+
+    /// Brings the backlinks up to date after refreshes, and saves.
+    pub fn commit(&mut self) {
         self.relink();
         self.save();
     }
@@ -133,6 +139,7 @@ pub fn build(root: &Path, entries: Vec<Entry>) -> Receiver<Index> {
 
 /// Indexes `entries`, reusing and then updating what's stored in `cache`.
 fn update(root: &Path, entries: &[Entry], cache: Option<PathBuf>) -> Index {
+    let prefix = prefix(root);
     let root = root.to_string_lossy().into_owned();
     let mut old = cache
         .as_deref()
@@ -145,7 +152,7 @@ fn update(root: &Path, entries: &[Entry], cache: Option<PathBuf>) -> Index {
     let mut changed = old.len() != entries.len();
     let mut files = HashMap::with_capacity(entries.len());
     for e in entries {
-        let (links, fresh) = read(&e.path, &e.rel, old.remove(&e.rel));
+        let (links, fresh) = read(&e.path, &e.rel, &prefix, old.remove(&e.rel));
         changed |= fresh;
         files.insert(e.rel.clone(), links);
     }
@@ -153,6 +160,7 @@ fn update(root: &Path, entries: &[Entry], cache: Option<PathBuf>) -> Index {
         files,
         backlinks: HashMap::new(),
         root,
+        prefix,
         cache,
     };
     index.relink();
@@ -164,7 +172,7 @@ fn update(root: &Path, entries: &[Entry], cache: Option<PathBuf>) -> Index {
 
 /// The links of the file at `path`: `old` if it's still up to date, or
 /// else read afresh (and then the bool is true).
-fn read(path: &Path, rel: &str, old: Option<FileLinks>) -> (FileLinks, bool) {
+fn read(path: &Path, rel: &str, prefix: &str, old: Option<FileLinks>) -> (FileLinks, bool) {
     let meta = std::fs::metadata(path).ok();
     let size = meta.as_ref().map_or(0, |m| m.len());
     let modified = meta.and_then(|m| m.modified().ok()).and_then(stamp);
@@ -182,7 +190,7 @@ fn read(path: &Path, rel: &str, old: Option<FileLinks>) -> (FileLinks, bool) {
     } else {
         String::new()
     };
-    let (title, links) = extract(&md, rel);
+    let (title, links) = extract(&md, rel, prefix);
     (
         FileLinks {
             modified,
@@ -194,9 +202,21 @@ fn read(path: &Path, rel: &str, old: Option<FileLinks>) -> (FileLinks, bool) {
     )
 }
 
+/// `root`'s path within its repository, like "docs", or "" at the top.
+fn prefix(root: &Path) -> String {
+    let site = files::site_root(root);
+    let rest = root.strip_prefix(&site).unwrap_or(Path::new(""));
+    let parts: Vec<_> = rest
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect();
+    parts.join("/")
+}
+
 /// The first heading of a document, and the Markdown files it links to,
-/// relative to the root. `rel` is the document's own path from the root.
-pub fn extract(md: &str, rel: &str) -> (Option<String>, Vec<String>) {
+/// relative to the root. `rel` is the document's own path from the root, and
+/// `prefix` the root's within its repository.
+pub fn extract(md: &str, rel: &str, prefix: &str) -> (Option<String>, Vec<String>) {
     let arena = Arena::new();
     let root = parse_document(&arena, md, &render::options());
     let mut title = None;
@@ -207,7 +227,7 @@ pub fn extract(md: &str, rel: &str) -> (Option<String>, Vec<String>) {
                 title = Some(render::plain_text(node)).filter(|t| !t.is_empty());
             }
             NodeValue::Link(link) => {
-                if let Some(to) = resolve(rel, &link.url)
+                if let Some(to) = resolve(rel, &link.url, prefix)
                     && !links.contains(&to)
                 {
                     links.push(to);
@@ -221,16 +241,20 @@ pub fn extract(md: &str, rel: &str) -> (Option<String>, Vec<String>) {
 
 /// The Markdown file a link in the document at `from` points to, relative
 /// to the root. `None` for web links, anchors, other kinds of file, and
-/// paths that leave the root. A leading `/` means the root, as on GitHub.
-pub fn resolve(from: &str, url: &str) -> Option<String> {
+/// paths that leave the root. A leading `/` means the top of the repository,
+/// as on GitHub; the root is `prefix` below it.
+pub fn resolve(from: &str, url: &str, prefix: &str) -> Option<String> {
     let path = render::local_path(url)?;
     if path.is_empty() || !files::is_markdown(Path::new(&path)) {
         return None;
     }
+    // Work from the top of the repository, then drop the root's part.
+    let root: Vec<&str> = prefix.split('/').filter(|p| !p.is_empty()).collect();
     let mut parts: Vec<&str> = if path.starts_with('/') {
         Vec::new()
     } else {
-        let mut dir: Vec<&str> = from.split('/').collect();
+        let mut dir = root.clone();
+        dir.extend(from.split('/'));
         dir.pop();
         dir
     };
@@ -243,7 +267,8 @@ pub fn resolve(from: &str, url: &str) -> Option<String> {
             _ => parts.push(part),
         }
     }
-    Some(parts.join("/"))
+    let under_root = parts.len() > root.len() && parts[..root.len()] == root[..];
+    under_root.then(|| parts[root.len()..].join("/"))
 }
 
 fn stamp(t: SystemTime) -> Option<(u64, u32)> {
@@ -271,26 +296,48 @@ mod tests {
 
     #[test]
     fn resolves_relative_links() {
-        assert_eq!(resolve("docs/a.md", "b.md").as_deref(), Some("docs/b.md"));
         assert_eq!(
-            resolve("docs/a.md", "../README.md#x").as_deref(),
+            resolve("docs/a.md", "b.md", "").as_deref(),
+            Some("docs/b.md")
+        );
+        assert_eq!(
+            resolve("docs/a.md", "../README.md#x", "").as_deref(),
             Some("README.md")
         );
         assert_eq!(
-            resolve("docs/a.md", "./sub/c.md").as_deref(),
+            resolve("docs/a.md", "./sub/c.md", "").as_deref(),
             Some("docs/sub/c.md")
         );
-        assert_eq!(resolve("docs/a.md", "/top.md").as_deref(), Some("top.md"));
-        assert_eq!(resolve("a.md", "../outside.md"), None);
-        assert_eq!(resolve("a.md", "https://x.io/b.md"), None);
-        assert_eq!(resolve("a.md", "#anchor"), None);
-        assert_eq!(resolve("a.md", "image.png"), None);
+        assert_eq!(
+            resolve("docs/a.md", "/top.md", "").as_deref(),
+            Some("top.md")
+        );
+        assert_eq!(resolve("a.md", "../outside.md", ""), None);
+        assert_eq!(resolve("a.md", "https://x.io/b.md", ""), None);
+        assert_eq!(resolve("a.md", "#anchor", ""), None);
+        assert_eq!(resolve("a.md", "image.png", ""), None);
+    }
+
+    #[test]
+    fn resolves_slash_links_from_the_repository_top() {
+        // Browsing repo/docs: "/docs/x.md" is x.md here; "/README.md" is above.
+        assert_eq!(
+            resolve("a.md", "/docs/x.md", "docs").as_deref(),
+            Some("x.md")
+        );
+        assert_eq!(
+            resolve("sub/a.md", "/docs/sub/y.md", "docs").as_deref(),
+            Some("sub/y.md")
+        );
+        assert_eq!(resolve("a.md", "/README.md", "docs"), None);
+        assert_eq!(resolve("a.md", "../README.md", "docs"), None);
+        assert_eq!(resolve("a.md", "b.md", "docs").as_deref(), Some("b.md"));
     }
 
     #[test]
     fn extracts_title_and_links_but_not_code() {
         let md = "Intro\n\n# The Title\n\n[b](b.md) [b again](b.md#x) [web](https://x.io)\n\n```\n[not](c.md)\n```\n";
-        let (title, links) = extract(md, "a.md");
+        let (title, links) = extract(md, "a.md", "");
         assert_eq!(title.as_deref(), Some("The Title"));
         assert_eq!(links, ["b.md"]);
     }
@@ -334,10 +381,12 @@ mod tests {
 
         // Editing a file updates its links; deleting it drops them.
         std::fs::write(dir.join("docs/other.md"), "no links now, but longer\n").unwrap();
-        again.refresh("docs/other.md", &dir.join("docs/other.md"));
+        assert!(again.refresh("docs/other.md", &dir.join("docs/other.md")));
+        again.commit();
         assert_eq!(again.linked_from("docs/guide.md"), ["README.md"]);
         std::fs::remove_file(dir.join("README.md")).unwrap();
-        again.refresh("README.md", &dir.join("README.md"));
+        assert!(again.refresh("README.md", &dir.join("README.md")));
+        again.commit();
         assert!(again.linked_from("docs/guide.md").is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }

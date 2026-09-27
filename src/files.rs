@@ -27,6 +27,64 @@ pub fn is_markdown(path: &Path) -> bool {
         .is_some_and(|e| EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
+/// The top of the repository `root` is in (the nearest folder with a `.git`),
+/// or `root` itself outside one. Links starting with `/` are relative to it,
+/// as on GitHub.
+pub fn site_root(root: &Path) -> PathBuf {
+    root.ancestors()
+        .find(|d| d.join(".git").exists())
+        .unwrap_or(root)
+        .to_path_buf()
+}
+
+/// Whether the scan would list `path`, a file under `root`: not in a hidden
+/// folder, and not ignored by `.gitignore` and the like, unless `all`. For
+/// files that appear after the scan.
+pub fn listable(root: &Path, path: &Path, all: bool) -> bool {
+    if all {
+        return true;
+    }
+    let Ok(rel) = path.strip_prefix(root) else {
+        return false;
+    };
+    let hidden = rel
+        .components()
+        .any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
+    !hidden && !ignored(root, path)
+}
+
+/// Whether ignore files exclude `path`, applied as the scan applies them:
+/// global git excludes, then `.git/info/exclude`, then each folder's
+/// `.gitignore` and `.ignore` from the top down, the more specific winning.
+fn ignored(root: &Path, path: &Path) -> bool {
+    use ignore::gitignore::{Gitignore, GitignoreBuilder};
+    let site = site_root(root);
+    // Each matcher is rooted at a folder `path` is under, as matching needs.
+    let mut matchers = vec![GitignoreBuilder::new(&site).build_global().0];
+    let mut exclude = GitignoreBuilder::new(&site);
+    exclude.add(site.join(".git").join("info").join("exclude"));
+    matchers.extend(exclude.build().ok());
+    let dirs: Vec<&Path> = path.ancestors().skip(1).collect();
+    for dir in dirs.into_iter().rev() {
+        for name in [".gitignore", ".ignore"] {
+            let file = dir.join(name);
+            if file.is_file() {
+                matchers.push(Gitignore::new(&file).0);
+            }
+        }
+    }
+    let mut ignored = false;
+    for m in &matchers {
+        let found = m.matched_path_or_any_parents(path, false);
+        if found.is_ignore() {
+            ignored = true;
+        } else if found.is_whitelist() {
+            ignored = false;
+        }
+    }
+    ignored
+}
+
 /// Walks `root` on a background thread, sending files in batches as it
 /// finds them. The channel closes when the walk is done. With `all`, hidden
 /// and ignored files are included.
@@ -162,6 +220,35 @@ mod tests {
         assert_eq!(ago_secs(7200), "2h ago");
         assert_eq!(ago_secs(3 * 86400), "3d ago");
         assert_eq!(ago(None, now), "");
+    }
+
+    #[test]
+    fn applies_ignore_files_to_new_files() {
+        let dir = std::env::temp_dir().join(format!("lsmd-listable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git/info")).unwrap();
+        std::fs::create_dir_all(dir.join("docs/gen")).unwrap();
+        std::fs::write(
+            dir.join(".gitignore"),
+            "node_modules/\n*.tmp.md\n!keep.tmp.md\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("docs/.gitignore"), "gen/\n").unwrap();
+        std::fs::write(dir.join(".git/info/exclude"), "private.md\n").unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let root = dir.join("docs");
+        let listed = |rel: &str, all| listable(&root, &root.join(rel), all);
+        assert!(listed("a.md", false));
+        assert!(listed("sub/b.md", false));
+        assert!(!listed("node_modules/pkg/README.md", false));
+        assert!(!listed("x.tmp.md", false));
+        assert!(listed("keep.tmp.md", false));
+        assert!(!listed("gen/out.md", false));
+        assert!(!listed("private.md", false));
+        assert!(!listed(".hidden/c.md", false));
+        assert!(listed("node_modules/pkg/README.md", true));
+        assert_eq!(site_root(&root), dir);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

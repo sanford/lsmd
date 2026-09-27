@@ -121,6 +121,7 @@ fn run(args: Args) -> io::Result<()> {
         &theme,
         true,
         base,
+        base.map(files::site_root).as_deref(),
     )
     .lines;
     ansi::print(&lines, &mut io::stdout().lock())

@@ -158,12 +158,12 @@ impl Picker {
             .map(|&i| self.rows[i].line.width())
             .max()
             .unwrap_or(0);
-        let width = (widest as u16 + 4)
-            .clamp(34, area.width.saturating_sub(4).max(1))
-            .min(area.width);
-        let height = (visible.len() as u16 + 3)
-            .clamp(4, area.height.saturating_sub(2).max(1))
-            .min(area.height);
+        // At least 34×4 if the screen allows, and never bigger than it.
+        // (Not `clamp`: on a tiny screen its minimum would pass its maximum.)
+        let max_width = area.width.saturating_sub(4).max(1).min(area.width);
+        let max_height = area.height.saturating_sub(2).max(1).min(area.height);
+        let width = (widest as u16 + 4).max(34).min(max_width);
+        let height = (visible.len() as u16 + 3).max(4).min(max_height);
         let rect = Rect {
             x: area.x + (area.width - width) / 2,
             y: area.y + (area.height - height) / 2,
@@ -243,6 +243,19 @@ mod tests {
         p.key(key(KeyCode::Down), false);
         p.key(key(KeyCode::Down), false);
         assert_eq!(chosen(&mut p), Some(3));
+    }
+
+    #[test]
+    fn draws_on_any_screen_size() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        for w in 0..45 {
+            for h in 0..10 {
+                let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+                let mut p = picker();
+                term.draw(|f| p.draw(f)).unwrap();
+            }
+        }
     }
 
     #[test]

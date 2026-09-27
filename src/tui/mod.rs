@@ -21,7 +21,7 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -113,8 +113,12 @@ struct App<'t> {
     scan: Option<Receiver<Vec<Entry>>>,
     /// The directory being browsed.
     root: Option<PathBuf>,
+    /// The top of its repository, where links starting with `/` start.
+    site_root: Option<PathBuf>,
     /// List hidden and ignored files too.
     all: bool,
+    /// Files live reload added while the scan was still running.
+    live_added: HashSet<PathBuf>,
     /// Watches the root and open documents for changes.
     watch: Option<Watch>,
     /// Who links to whom, once it's built.
@@ -172,7 +176,9 @@ impl<'t> App<'t> {
             files: Vec::new(),
             scan: None,
             root: None,
+            site_root: None,
             all: false,
+            live_added: HashSet::new(),
             watch: None,
             index: None,
             indexing: None,
@@ -204,7 +210,10 @@ impl<'t> App<'t> {
         };
         match source {
             Source::Text { title, md } => {
-                app.text = Some((title, Doc::new(md)));
+                let mut doc = Doc::new(md);
+                app.site_root = doc.base.as_deref().map(files::site_root);
+                doc.site = app.site_root.clone();
+                app.text = Some((title, doc));
                 app.focus = Focus::Reader;
                 app.watch = Watch::new();
             }
@@ -215,6 +224,7 @@ impl<'t> App<'t> {
                 if let Some(watch) = &mut app.watch {
                     watch.add(&root);
                 }
+                app.site_root = Some(files::site_root(&root));
                 app.root = Some(root);
                 app.all = all;
                 if let Some(path) = open {
@@ -286,12 +296,16 @@ impl<'t> App<'t> {
         loop {
             match rx.try_recv() {
                 Ok(batch) => {
-                    self.files.extend(batch);
+                    // Skip files live reload already added mid-scan.
+                    let live = &self.live_added;
+                    self.files
+                        .extend(batch.into_iter().filter(|e| !live.contains(&e.path)));
                     changed = true;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     self.scan = None;
+                    self.live_added.clear();
                     changed = true;
                     if let Some(root) = &self.root {
                         self.indexing = Some(index::build(root, self.files.clone()));
@@ -371,7 +385,9 @@ impl<'t> App<'t> {
             if let Some(watch) = &mut self.watch {
                 watch.add(path);
             }
-            self.docs.insert(path.to_path_buf(), Doc::load(path));
+            let mut doc = Doc::load(path);
+            doc.site = self.site_root.clone();
+            self.docs.insert(path.to_path_buf(), doc);
         }
         self.docs.get_mut(path).unwrap()
     }
@@ -382,6 +398,7 @@ impl<'t> App<'t> {
         let Some(watch) = &self.watch else { return };
         let changed = watch.changed();
         let mut list_changed = false;
+        let mut index_changed = false;
         for path in changed.into_iter().filter(|p| files::is_markdown(p)) {
             let exists = path.is_file();
             if let Some(doc) = self.docs.get_mut(&path)
@@ -389,30 +406,40 @@ impl<'t> App<'t> {
             {
                 doc.reload(&path);
             }
-            let Some(rel) = self.rel_of(&path) else {
+            let (Some(root), Some(rel)) = (self.root.clone(), self.rel_of(&path)) else {
                 continue;
             };
-            if let Some(index) = &mut self.index {
-                index.refresh(&rel, &path);
-            }
-            // New files in hidden directories stay out, as in the scan.
-            if !self.all && rel.split('/').any(|part| part.starts_with('.')) {
+            let listed = self.files.iter().position(|e| e.path == path);
+            // A new file only joins if the scan would have listed it: not in
+            // node_modules or anything else .gitignore'd, nor hidden.
+            if listed.is_none() && !(exists && files::listable(&root, &path, self.all)) {
                 continue;
             }
+            if let Some(index) = &mut self.index {
+                index_changed |= index.refresh(&rel, &path);
+            }
             let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-            match self.files.iter().position(|e| e.path == path) {
+            match listed {
                 Some(i) if exists => self.files[i].modified = modified,
                 Some(i) => {
                     self.files.remove(i);
                 }
-                None if exists => self.files.push(Entry {
-                    path,
-                    rel,
-                    modified,
-                }),
-                None => continue,
+                None => {
+                    // The scan may yet send it too: see `receive`.
+                    if self.scan.is_some() {
+                        self.live_added.insert(path.clone());
+                    }
+                    self.files.push(Entry {
+                        path,
+                        rel,
+                        modified,
+                    });
+                }
             }
             list_changed = true;
+        }
+        if index_changed && let Some(index) = &mut self.index {
+            index.commit();
         }
         if list_changed {
             self.refresh();

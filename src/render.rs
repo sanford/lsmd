@@ -87,6 +87,7 @@ pub fn render(
     theme: &Theme,
     wrap_code: bool,
     base: Option<&Path>,
+    site: Option<&Path>,
 ) -> Rendered {
     let arena = Arena::new();
     let root = parse_document(&arena, md, &options());
@@ -102,6 +103,7 @@ pub fn render(
         depth: 0,
         footnotes: false,
         base,
+        site,
         links: RefCell::new(Vec::new()),
         inline_depth: std::cell::Cell::new(0),
         headings: Vec::new(),
@@ -143,6 +145,8 @@ struct Renderer<'t> {
     depth: usize,
     footnotes: bool,
     base: Option<&'t Path>,
+    /// Where links starting with `/` start from: see `files::site_root`.
+    site: Option<&'t Path>,
     /// Nesting of the inline being collected. A Cell for the same reason.
     inline_depth: std::cell::Cell<usize>,
     /// Link targets. A RefCell because inlines are collected through `&self`.
@@ -740,7 +744,7 @@ impl Renderer<'_> {
         let Some(path) = local_path(url) else {
             return false;
         };
-        !path.is_empty() && !path.starts_with('/') && !base.join(path).exists()
+        !path.is_empty() && !local_target(base, self.site, &path).exists()
     }
 
     fn inline_children(&self, node: Node<'_>, style: Style, out: &mut Vec<Piece>) {
@@ -764,6 +768,16 @@ pub fn local_path(url: &str) -> Option<String> {
     }
     let path = url.split(['#', '?']).next().unwrap_or("");
     Some(percent_decode(path))
+}
+
+/// The file a link's path (from [`local_path`]) points to, from a document
+/// in `base`. A leading `/` means `site`, the top of the repository, as on
+/// GitHub, rather than the top of the disk.
+pub fn local_target(base: &Path, site: Option<&Path>, path: &str) -> std::path::PathBuf {
+    match (path.strip_prefix('/'), site) {
+        (Some(rest), Some(site)) => site.join(rest),
+        _ => base.join(path),
+    }
 }
 
 /// Decodes `%20` and friends. Invalid escapes are kept as they are.
@@ -863,7 +877,7 @@ mod tests {
     use super::*;
 
     fn plain(md: &str, width: usize) -> String {
-        render(md, width, &Theme::plain(), true, None)
+        render(md, width, &Theme::plain(), true, None, None)
             .lines
             .iter()
             .map(|l| l.text() + "\n")
@@ -887,6 +901,7 @@ mod tests {
             &Theme::plain(),
             true,
             None,
+            None,
         )
         .lines;
         let src: Vec<_> = lines.iter().map(|l| l.src).collect();
@@ -906,16 +921,60 @@ mod tests {
     #[test]
     fn leaves_code_unwrapped_for_scrolling() {
         let md = "> ```\n> a long line of code\n> ```\n";
-        let lines = render(md, 12, &Theme::plain(), false, None).lines;
+        let lines = render(md, 12, &Theme::plain(), false, None, None).lines;
         let code = lines.iter().find(|l| l.text().contains("long")).unwrap();
         assert_eq!(code.text(), "│     a long line of code");
         assert_eq!(code.scroll_from, Some(2));
     }
 
     #[test]
+    fn resolves_slash_links_from_the_site_root() {
+        let dir = std::env::temp_dir().join(format!("lsmd-slash-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("docs/guide.md"), "").unwrap();
+        let base = dir.join("docs");
+        assert_eq!(
+            local_target(&base, Some(&dir), "/docs/guide.md"),
+            dir.join("docs/guide.md")
+        );
+        assert_eq!(
+            local_target(&base, Some(&dir), "guide.md"),
+            dir.join("docs/guide.md")
+        );
+        // Broken only when the file really isn't there.
+        let md = "[ok](/docs/guide.md) [gone](/docs/nope.md)\n";
+        let r = render(md, 80, &Theme::plain(), true, Some(&base), Some(&dir));
+        let r_plain = render(
+            md,
+            80,
+            &Theme::new(crate::theme::Mode::Dark, true),
+            true,
+            Some(&base),
+            Some(&dir),
+        );
+        let styles: Vec<_> = r_plain.lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.content == "ok" || s.content == "gone")
+            .map(|s| {
+                (
+                    s.content.to_string(),
+                    s.style.add_modifier.contains(Modifier::CROSSED_OUT),
+                )
+            })
+            .collect();
+        assert_eq!(
+            styles,
+            [("ok".to_string(), false), ("gone".to_string(), true)]
+        );
+        assert_eq!(r.links, ["/docs/guide.md", "/docs/nope.md"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn records_headings_and_links() {
         let md = "# Intro\n\nSee [the guide](guide.md#setup) and [web](https://x.io).\n\n## Intro\n\n| a |\n|---|\n| [t](#intro) |\n";
-        let r = render(md, 80, &Theme::plain(), true, None);
+        let r = render(md, 80, &Theme::plain(), true, None, None);
         let slugs: Vec<_> = r
             .headings
             .iter()

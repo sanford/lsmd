@@ -37,10 +37,11 @@ impl App<'_> {
             .map(|ix| rel.map_or(0, |r| ix.linked_from(&r).len()));
         let out = self.current().map_or(0, |doc| {
             let base = doc.base.clone().unwrap_or_default();
+            let site = doc.site.clone();
             let mut targets: Vec<PathBuf> = doc
                 .links()
                 .iter()
-                .filter_map(|url| markdown_target(&base, url))
+                .filter_map(|url| markdown_target(&base, site.as_deref(), url))
                 .filter(|p| p.is_file())
                 .collect();
             targets.sort();
@@ -76,7 +77,7 @@ impl App<'_> {
     /// links either way.
     pub(super) fn links_picker(&mut self) -> Option<Picker> {
         let rel = self.current_path().and_then(|p| self.rel_of(&p));
-        let (urls, base, headings) = {
+        let (urls, base, site, headings) = {
             let doc = self.current()?;
             let headings: Vec<(String, String)> = doc
                 .headings()
@@ -86,6 +87,7 @@ impl App<'_> {
             (
                 doc.links().to_vec(),
                 doc.base.clone().unwrap_or_default(),
+                doc.site.clone(),
                 headings,
             )
         };
@@ -123,7 +125,7 @@ impl App<'_> {
                 ));
                 continue;
             }
-            let target = clean(&base.join(&path));
+            let target = clean(&render::local_target(&base, site.as_deref(), &path));
             let key = target.to_string_lossy().into_owned();
             if seen.contains(&key) {
                 continue;
@@ -225,14 +227,14 @@ impl App<'_> {
             return Some(title.to_string());
         }
         let md = std::fs::read_to_string(path).ok()?;
-        index::extract(&md, "").0
+        index::extract(&md, "", "").0
     }
 }
 
 /// The Markdown file `url` points to, from a document in `base`.
-fn markdown_target(base: &Path, url: &str) -> Option<PathBuf> {
+fn markdown_target(base: &Path, site: Option<&Path>, url: &str) -> Option<PathBuf> {
     let path = render::local_path(url).filter(|p| !p.is_empty())?;
-    let target = clean(&base.join(path));
+    let target = clean(&render::local_target(base, site, &path));
     files::is_markdown(&target).then_some(target)
 }
 
