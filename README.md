@@ -2,58 +2,29 @@
 
 **Find your way around a lot of Markdown.** `lsmd` is a terminal reader for directories with hundreds of Markdown files: design docs, plans, notes, changelogs. It lists them all on one screen, searches every one of them, and lets you chase links from document to document and pop back to where you started.
 
-```
-$ cd ~/dev/lanternworks && lsmd      # select DESIGN.md, press L
- lsmd  332 files in ~/dev/lanternworks                                10 linked docs · linked from 1  L links
-┌ Files (332) ─────────────────────────────┐┌ DESIGN.md ─────────────────────────────────────────────────────┐
-│ README.md                          9d ago││ lineHeight: 1.35                                               │
-│ CHANGELOG.md                       6h ago││ mono:                                                          │
-│ CLAUDE.md                         14h ago││ fontFamily: "JetBrains Mono, Consolas, monospace"              │
-│ DESIGN.┌ Links ───────────────────────────────────────────────────────────────────────────────────┐        │
-│ DOTNET.│ Links to (10)                                                                            │        │
-│ FEATURE│   docs/DESIGN-CORE.md                    Lanternworks Core Design                        │        │
-│ GOTCHAS│   docs/DESIGN-ARCHITECTURE.md            Lanternworks Technical Architecture             │        │
-│ HISTORY│   docs/DESIGN-UI.md                      Lanternworks UI Design                          │        │
-│ IDEAS.m│   docs/DESIGN-CAPTURE.md                 Lanternworks Capture System                     │        │
-│ MACOS.m│   docs/DESIGN-TOOLS.md                   Lanternworks Annotation Tools                   │        │
-│ MACOS_P│   docs/DESIGN-FEATURES.md                Lanternworks Features                           │        │
-│ PRODUCT│   docs/DESIGN-IMPLEMENTATION.md          Lanternworks Implementation Plan                │        │
-│ THIRD_P│   docs/CAMERA_OVERLAY_COMPOSITE.md       Camera Overlay Composite — Preview vs. Export   │        │
-│ TODO.md│   docs/RECORDER_PANEL_PICKER_SUBFLOW.md  Recorder Panel — Custom Area Sub-flow           │        │
-│ docs/AD│   docs/RECORDER_PANEL_VERIFICATION.md    Recorder Panel — Manual Verification Checklist  │        │
-│ docs/AG│ Linked from (1)                                                                          │        │
-│ docs/AG│   README.md                              Lanternworks                                    │        │
-│ docs/AI│ type to filter, ⏎ to go                                                                  │        │
-│ docs/AI└──────────────────────────────────────────────────────────────────────────────────────────┘        │
-│ docs/ANNOTATION_SCALING.md         6d ago││ components:                                                    │
-│ docs/API.md                        9d ago││ button-primary:                                                │
-│ docs/APPLESCRIPT_CAPTURE.md        9d ago││ backgroundColor: "{colors.accent-iris}"                        │
-└──────────────────────────────────────────┘└────────────────────────────────────────────────────────────────┘
- ↑↓ choose  ⏎ go  esc close
-```
+![lsmd browsing a project with 332 Markdown files: the file list on the left, the selected document rendered on the right](docs/images/browse.png)
 
-That's 332 documents. `DESIGN.md` links to 10 of them, listed with their titles, and one document links back to it. `Enter` opens any of them. From there, `L`, `f` or a click goes further, and `Esc` steps back through everything you opened, to the place you left each one.
+That's what you see when you run `lsmd` in a project: every Markdown file, with how long ago it changed, and the selected one rendered beside the list. `↑` `↓` move through them, `Enter` opens one full screen.
 
 ## Why
 
-Documentation piles up. A project that's been worked on for a while, especially with AI agents writing plans and design notes, ends up with hundreds of Markdown files that refer to each other. Reading them one at a time in an editor or a pager loses the thread. `lsmd` is built for following it:
+Documentation piles up. A project that's been worked on for a while, especially with AI agents writing plans and design notes, ends up with hundreds of Markdown files that refer to each other. Reading them one at a time in an editor or a pager loses the thread. `lsmd` is built for following it.
 
-- **Everything on one screen.** One line per file with its age, and a live preview of the selected one. `/` narrows the list by name as you type.
-- **Search every file.** `s` searches the text of every document in the list and shows the matches grouped by file. Opening one lands on the match, highlighted, with `n` and `N` for the next ones.
+**Search every file.** `/` narrows the list by name as you type, and `s` searches the text of every document in it. The matches come back grouped by file; opening one lands on the match, highlighted, with `n` and `N` for the next ones.
 
-  ```
-  │ ┌ 5 matches for “undo stack” in 4 files ─────────────────────────────────────────────────────────────────┐ │
-  │ │ CHANGELOG.md (1)                                                                                       │ │
-  │ │    831  … files rather than unwinding the undo stack, because trim, crop, grade and stage decor never e│ │
-  │ │ HISTORY.md (2)                                                                                         │ │
-  │ │   10673  ## Session: Toolbar UX and Undo Stack Fix (December 2025)                                     │ │
-  │ │   10698  **4. Undo Stack Fix - Base Layer Not Undoable**                                               │ │
-  ```
+![Searching every file for "undo stack": five matches in four files, each line shown with the match highlighted](docs/images/search.png)
 
-- **Chase links, then come back.** Follow a link with the keyboard (`f` puts a letter on every link on screen; type it), with the mouse, or from the links panel, and keep going as deep as you like. `Esc` goes back one document at a time, each scrolled to where you were, and the footer says where it'll take you: `esc back to DESIGN-ARCHITECTURE.md`. When there's nowhere left to go back to, it takes you to the file list.
-- **See links both ways.** The header shows how the document on screen is connected (`10 linked docs · linked from 1`), and `L` lists both directions with titles. "Linked from" answers the question you usually have in a pile of docs: what else refers to this? Links to files that don't exist are struck through.
-- **Find your place in a long document.** `/` searches it, `]` and `[` jump between headings, and `o` opens an outline you can filter.
-- **Stays current.** Documents reload as they're edited, keeping your place, so `lsmd` works beside your editor, or beside an agent that's writing. `e` opens your editor at the line you're reading.
+**See how documents connect.** The header shows how the document on screen is connected: `2 linked docs · linked from 7`. `L` lists both directions, with each document's title. "Linked from" answers the question you usually have in a pile of docs: what else refers to this? Links to files that don't exist are struck through.
+
+![The links panel: the two documents this one links to, and the seven that link to it, with their titles](docs/images/links.png)
+
+**Chase links, then come back.** Follow a link from the links panel, by clicking it, or with `f`, which puts a letter on every link on screen for you to type. Keep going as deep as you like. `Esc` goes back one document at a time, each scrolled to where you were, and the footer says where it'll take you. When there's nowhere left to go back to, it takes you to the file list.
+
+![Reading a document reached by following a link; the footer says "esc back to DESIGN.md"](docs/images/reader.png)
+
+**Find your place in a long document.** `/` searches it, `]` and `[` jump between headings, and `o` opens an outline you can filter.
+
+**Stays current.** Documents reload as they're edited, keeping your place, so `lsmd` works beside your editor, or beside an agent that's writing. `e` opens your editor at the line you're reading.
 
 It reads well, too. Text uses the full width of the terminal, and tables, code, task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `Tab` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading.
 
