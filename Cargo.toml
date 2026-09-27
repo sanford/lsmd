@@ -2,7 +2,7 @@
 name = "lsmd"
 version = "0.1.0"
 edition = "2024"
-description = "Browse and read Markdown in the terminal, full width, with source side by side"
+description = "Browse, search and follow links through large sets of Markdown docs in the terminal"
 repository = "https://github.com/sanford/lsmd"
 license = "GPL-3.0-or-later"
 readme = "README.md"

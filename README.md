@@ -1,44 +1,63 @@
 # lsmd
 
-**Browse and read Markdown in the terminal.** `lsmd` lists the Markdown files under a directory with a live preview, renders them the full width of your terminal, and shows the source side by side when you press `Tab`.
+**Find your way around a lot of Markdown.** `lsmd` is a terminal reader for directories with hundreds of Markdown files: design docs, plans, notes, changelogs. It lists them all on one screen, searches every one of them, and lets you chase links from document to document and pop back to where you started.
 
 ```
-$ lsmd RELEASING.md        # then Tab
- lsmd  ~/dev/lsnet/RELEASING.md                                                  linked from 1  L links
-  Releasing lsnet                                  │  1 # Releasing lsnet
-  ═══════════════                                  │  2
-                                                   │  3 A release is a version tag on this repo, a
-  A release is a version tag on this repo, a       │    formula update in the Homebrew tap
-  formula update in the Homebrew tap               │    ([sanford/homebrew-tap](https://github.com/sanf
-  (sanford/homebrew-tap                            │    ord/homebrew-tap)), and a GitHub Release with
-  (https://github.com/sanford/homebrew-tap)), and  │    notes and a Windows binary. Homebrew builds
-  a GitHub Release with notes and a Windows        │    from the source tarball GitHub serves for
-  binary. Homebrew builds from the source tarball  │    each tag, so macOS and Linux need no
-  GitHub serves for each tag, so macOS and Linux   │    binaries. Windows has no Homebrew, so its
-  need no binaries. Windows has no Homebrew, so    │    `lsnet.exe` is built from the tag and
-  its lsnet.exe is built from the tag and attached │    attached to the release.
-  to the release.                                  │  4
-                                                   │  5 The examples below release `0.2.0` after
-  The examples below release 0.2.0 after 0.1.0.    │    `0.1.0`. Substitute the real versions.
-  Substitute the real versions.                    │  6
-                                                   │  7 ## 1. Prepare
-  1. Prepare                                       │  8
- ↑↓ scroll  / search  f follow  o outline  tab hide source  ^w to source  esc list  ? help  q quit  Top
+$ cd ~/dev/lanternworks && lsmd      # select DESIGN.md, press L
+ lsmd  332 files in ~/dev/lanternworks                                10 linked docs · linked from 1  L links
+┌ Files (332) ─────────────────────────────┐┌ DESIGN.md ─────────────────────────────────────────────────────┐
+│ README.md                          9d ago││ lineHeight: 1.35                                               │
+│ CHANGELOG.md                       6h ago││ mono:                                                          │
+│ CLAUDE.md                         14h ago││ fontFamily: "JetBrains Mono, Consolas, monospace"              │
+│ DESIGN.┌ Links ───────────────────────────────────────────────────────────────────────────────────┐        │
+│ DOTNET.│ Links to (10)                                                                            │        │
+│ FEATURE│   docs/DESIGN-CORE.md                    Lanternworks Core Design                        │        │
+│ GOTCHAS│   docs/DESIGN-ARCHITECTURE.md            Lanternworks Technical Architecture             │        │
+│ HISTORY│   docs/DESIGN-UI.md                      Lanternworks UI Design                          │        │
+│ IDEAS.m│   docs/DESIGN-CAPTURE.md                 Lanternworks Capture System                     │        │
+│ MACOS.m│   docs/DESIGN-TOOLS.md                   Lanternworks Annotation Tools                   │        │
+│ MACOS_P│   docs/DESIGN-FEATURES.md                Lanternworks Features                           │        │
+│ PRODUCT│   docs/DESIGN-IMPLEMENTATION.md          Lanternworks Implementation Plan                │        │
+│ THIRD_P│   docs/CAMERA_OVERLAY_COMPOSITE.md       Camera Overlay Composite — Preview vs. Export   │        │
+│ TODO.md│   docs/RECORDER_PANEL_PICKER_SUBFLOW.md  Recorder Panel — Custom Area Sub-flow           │        │
+│ docs/AD│   docs/RECORDER_PANEL_VERIFICATION.md    Recorder Panel — Manual Verification Checklist  │        │
+│ docs/AG│ Linked from (1)                                                                          │        │
+│ docs/AG│   README.md                              Lanternworks                                    │        │
+│ docs/AI│ type to filter, ⏎ to go                                                                  │        │
+│ docs/AI└──────────────────────────────────────────────────────────────────────────────────────────┘        │
+│ docs/ANNOTATION_SCALING.md         6d ago││ components:                                                    │
+│ docs/API.md                        9d ago││ button-primary:                                                │
+│ docs/APPLESCRIPT_CAPTURE.md        9d ago││ backgroundColor: "{colors.accent-iris}"                        │
+└──────────────────────────────────────────┘└────────────────────────────────────────────────────────────────┘
+ ↑↓ choose  ⏎ go  esc close
 ```
 
-It's in the spirit of [glow](https://github.com/charmbracelet/glow), for people who keep a lot of Markdown around: a dense file list, the whole terminal for reading, and ways to get around a set of documents (search, outlines, links in and out).
+That's 332 documents. `DESIGN.md` links to 10 of them, listed with their titles, and one document links back to it. `Enter` opens any of them. From there, `L`, `f` or a click goes further, and `Esc` steps back through everything you opened, to the place you left each one.
 
-## Features
+## Why
 
-- **Browse and preview.** One line per file, with a live preview of the selected one. Fuzzy-filter names with `/`; search the text of every file with `s`.
-- **Full width.** Text wraps to your terminal, not to 80 columns, and re-wraps when you resize.
-- **Source side by side.** `Tab` shows the Markdown beside the rendered text, scrolled together block by block, so a 3-line table that renders as 10 lines stays lined up.
-- **Renders what GitHub renders.** Tables, task lists, footnotes, `> [!NOTE]` alerts, front matter, syntax-highlighted code, and the HTML READMEs open with (logos and badges become `[image: …]`).
-- **Gets around documents.** Search in a document (`/`), jump between headings (`]` `[`) or through an outline (`o`), and follow links with the keyboard (`f`) or the mouse. `Esc` goes back to where you were.
-- **Links both ways.** The header shows how many documents a file links to and how many link to it; `L` lists them. Broken relative links are struck through.
-- **Live reload.** Edit in another window, or press `e` to open your editor at the line you're reading; `lsmd` re-renders in place.
-- **Scriptable.** When the output isn't a terminal, `lsmd FILE` prints the rendered document and `lsmd` lists the files.
-- **macOS, Linux and Windows.**
+Documentation piles up. A project that's been worked on for a while, especially with AI agents writing plans and design notes, ends up with hundreds of Markdown files that refer to each other. Reading them one at a time in an editor or a pager loses the thread. `lsmd` is built for following it:
+
+- **Everything on one screen.** One line per file with its age, and a live preview of the selected one. `/` narrows the list by name as you type.
+- **Search every file.** `s` searches the text of every document in the list and shows the matches grouped by file. Opening one lands on the match, highlighted, with `n` and `N` for the next ones.
+
+  ```
+  │ ┌ 5 matches for “undo stack” in 4 files ─────────────────────────────────────────────────────────────────┐ │
+  │ │ CHANGELOG.md (1)                                                                                       │ │
+  │ │    831  … files rather than unwinding the undo stack, because trim, crop, grade and stage decor never e│ │
+  │ │ HISTORY.md (2)                                                                                         │ │
+  │ │   10673  ## Session: Toolbar UX and Undo Stack Fix (December 2025)                                     │ │
+  │ │   10698  **4. Undo Stack Fix - Base Layer Not Undoable**                                               │ │
+  ```
+
+- **Chase links, then come back.** Follow a link with the keyboard (`f` puts a letter on every link on screen; type it), with the mouse, or from the links panel, and keep going as deep as you like. `Esc` goes back one document at a time, each scrolled to where you were, and the footer says where it'll take you: `esc back to DESIGN-ARCHITECTURE.md`. When there's nowhere left to go back to, it takes you to the file list.
+- **See links both ways.** The header shows how the document on screen is connected (`10 linked docs · linked from 1`), and `L` lists both directions with titles. "Linked from" answers the question you usually have in a pile of docs: what else refers to this? Links to files that don't exist are struck through.
+- **Find your place in a long document.** `/` searches it, `]` and `[` jump between headings, and `o` opens an outline you can filter.
+- **Stays current.** Documents reload as they're edited, keeping your place, so `lsmd` works beside your editor, or beside an agent that's writing. `e` opens your editor at the line you're reading.
+
+It reads well, too. Text uses the full width of the terminal, and tables, code, task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `Tab` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading.
+
+`lsmd` runs on macOS, Linux and Windows. When its output isn't a terminal, `lsmd FILE` prints the rendered document and `lsmd` lists the files, for scripts.
 
 ## Install
 
