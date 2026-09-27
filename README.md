@@ -1,6 +1,8 @@
 # lsmd
 
-**Find your way around a lot of Markdown.** `lsmd` is a terminal reader for directories with hundreds of Markdown files: design docs, plans, notes, changelogs. It lists them all on one screen, searches every one of them, and lets you chase links from document to document and pop back to where you started.
+**A Markdown reader built for speed and easy navigation in large projects.**
+
+`lsmd` shows every Markdown file in your project on one screen, so you can browse and read them quickly. It knows which documents link to each other, in both directions, so you can jump to related documents instantly. It searches the document you're reading as you type, and every file in the project in a moment. It makes it easy to find your way around everything your team and your AI agents write.
 
 ![lsmd browsing a project with 332 Markdown files: the file list on the left, the selected document rendered on the right](docs/images/browse.png)
 
