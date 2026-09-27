@@ -49,7 +49,7 @@ impl RLine {
 }
 
 /// GitHub-flavored Markdown, plus the extensions GitHub renders.
-fn options() -> Options<'static> {
+pub(crate) fn options() -> Options<'static> {
     let mut options = Options::default();
     let ext = &mut options.extension;
     ext.strikethrough = true;
@@ -723,7 +723,7 @@ fn percent_decode(s: &str) -> String {
 }
 
 /// The text of a node's descendants with formatting dropped (image alt text).
-fn plain_text(node: Node<'_>) -> String {
+pub(crate) fn plain_text(node: Node<'_>) -> String {
     let mut s = String::new();
     for d in node.descendants().skip(1) {
         match &d.data().value {

@@ -935,6 +935,8 @@ dependencies = [
  "insta",
  "nucleo-matcher",
  "ratatui",
+ "serde",
+ "serde_json",
  "syntect",
  "terminal-colorsaurus",
  "two-face",

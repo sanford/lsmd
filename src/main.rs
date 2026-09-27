@@ -3,6 +3,7 @@ mod doc;
 mod files;
 mod highlight;
 mod html;
+mod index;
 mod render;
 mod theme;
 mod tui;

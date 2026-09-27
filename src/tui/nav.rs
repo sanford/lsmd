@@ -1,17 +1,14 @@
 //! Getting around documents: search, headings and the outline, and
 //! following links, with a history to go back through.
 
+use super::picker::{Outcome, Picker, Row, Target};
 use super::{App, Focus};
 use crate::files;
 use crate::render;
-use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
-use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 use std::path::PathBuf;
 
 /// Something in the reader that takes the keyboard until it's done.
@@ -20,8 +17,8 @@ pub enum Prompt {
     Search { query: String, from: usize },
     /// Choosing a link by its hint letters.
     Hints { typed: String },
-    /// The outline: headings, filtered by `filter`.
-    Outline { filter: String, list: ListState },
+    /// The outline or the links panel.
+    Pick(Picker),
     /// Confirming opening something outside lsmd.
     Open { target: String },
 }
@@ -67,21 +64,25 @@ impl App<'_> {
                     self.flash = Some("No headings".into());
                 } else {
                     let top = doc.top();
-                    let current = doc
+                    let current = doc.headings().iter().rposition(|h| h.line <= top);
+                    let rows = doc
                         .headings()
                         .iter()
-                        .rposition(|h| h.line <= top)
-                        .unwrap_or(0);
-                    let list = ListState::default().with_selected(Some(current));
-                    self.prompt = Some(Prompt::Outline {
-                        filter: String::new(),
-                        list,
-                    });
+                        .map(|h| {
+                            let indent = "  ".repeat(usize::from(h.level.saturating_sub(1)));
+                            let text = Span::raw(h.text.clone());
+                            let text = if h.level <= 2 { text.bold() } else { text };
+                            let line = Line::from(vec![Span::raw(format!(" {indent}")), text]);
+                            Row::item(h.text.clone(), line, Target::Line(h.line))
+                        })
+                        .collect();
+                    self.prompt = Some(Prompt::Pick(Picker::new("Outline".into(), rows, current)));
                 }
             }
+            KeyCode::Char('L') => self.open_links(),
             KeyCode::Char('f') => self.show_hints(),
             KeyCode::Esc if doc.search_status().is_some() => doc.clear_search(),
-            KeyCode::Backspace if !self.history.is_empty() => self.go_back(),
+            KeyCode::Esc | KeyCode::Backspace if !self.history.is_empty() => self.go_back(),
             _ => return false,
         }
         true
@@ -141,44 +142,11 @@ impl App<'_> {
                     self.clear_hints();
                 }
             }
-            Prompt::Outline {
-                mut filter,
-                mut list,
-            } => {
-                let shown = self.outline_items(&filter).len();
-                match key.code {
-                    KeyCode::Esc => return,
-                    KeyCode::Enter => {
-                        let items = self.outline_items(&filter);
-                        if let Some(&(i, _)) = list.selected().and_then(|s| items.get(s)) {
-                            let here = self.here();
-                            if let Some(doc) = self.current() {
-                                let line = doc.headings()[i].line;
-                                doc.jump_to(line);
-                                self.history.extend(here);
-                            }
-                        }
-                        return;
-                    }
-                    KeyCode::Down => list.select_next(),
-                    KeyCode::Up => list.select_previous(),
-                    KeyCode::Char('n') if ctrl => list.select_next(),
-                    KeyCode::Char('p') if ctrl => list.select_previous(),
-                    KeyCode::Backspace => {
-                        filter.pop();
-                        list.select(Some(0));
-                    }
-                    KeyCode::Char(c) if !ctrl => {
-                        filter.push(c);
-                        list.select(Some(0));
-                    }
-                    _ => {}
-                }
-                if list.selected().is_some_and(|s| s >= shown) {
-                    list.select(Some(shown.saturating_sub(1)));
-                }
-                self.prompt = Some(Prompt::Outline { filter, list });
-            }
+            Prompt::Pick(mut picker) => match picker.key(key, ctrl) {
+                Outcome::Stay => self.prompt = Some(Prompt::Pick(picker)),
+                Outcome::Close => {}
+                Outcome::Choose(target) => self.go(target),
+            },
             Prompt::Open { target } => {
                 if matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter) {
                     self.flash = Some(match open_externally(&target) {
@@ -221,6 +189,24 @@ impl App<'_> {
         let path = self.reading.clone();
         let top = self.current()?.top();
         Some(Place { path, top })
+    }
+
+    /// Where Esc goes from the reader, for the footer.
+    pub(super) fn back_label(&self) -> String {
+        match self.history.last() {
+            Some(Place {
+                path: Some(path), ..
+            }) if Some(path) == self.reading.as_ref() => "back".into(),
+            Some(Place {
+                path: Some(path), ..
+            }) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                format!("back to {}", name.unwrap_or_default())
+            }
+            Some(Place { path: None, .. }) => "back to stdin".into(),
+            None if self.text.is_none() => "list".into(),
+            None => "quit".into(),
+        }
     }
 
     fn go_back(&mut self) {
@@ -269,6 +255,46 @@ impl App<'_> {
             });
             return;
         }
+        self.open_path(target, anchor);
+    }
+
+    pub(super) fn draw_picker(&mut self, f: &mut Frame) {
+        if let Some(Prompt::Pick(picker)) = &mut self.prompt {
+            picker.draw(f);
+        }
+    }
+
+    /// Opens the links panel for the document on screen.
+    pub(super) fn open_links(&mut self) {
+        match self.links_picker() {
+            Some(picker) => self.prompt = Some(Prompt::Pick(picker)),
+            None => self.flash = Some("No links to or from this document".into()),
+        }
+    }
+
+    /// Goes where a picker row points.
+    fn go(&mut self, target: Target) {
+        // Chosen from the list's preview: read that document.
+        if self.focus == Focus::List {
+            self.reading = self.selected().map(|e| e.path.clone());
+            self.focus = Focus::Reader;
+        }
+        match target {
+            Target::Line(line) => {
+                let here = self.here();
+                if let Some(doc) = self.current() {
+                    doc.jump_to(line);
+                    self.history.extend(here);
+                }
+            }
+            Target::Link(url) => self.follow(&url),
+            Target::File(path) => self.open_path(path, None),
+        }
+    }
+
+    /// Opens a Markdown file in the reader, remembering where we were.
+    fn open_path(&mut self, target: PathBuf, anchor: Option<String>) {
+        let here = self.here();
         let target = std::fs::canonicalize(&target).unwrap_or(target);
         self.history.extend(here);
         self.reading = Some(target.clone());
@@ -278,105 +304,6 @@ impl App<'_> {
         if let Some(anchor) = anchor {
             doc.go_to_anchor(&anchor);
         }
-    }
-
-    /// Headings that pass the outline's filter: their index and how they
-    /// show in the list.
-    fn outline_items(&mut self, filter: &str) -> Vec<(usize, Line<'static>)> {
-        let Some(doc) = self.current() else {
-            return Vec::new();
-        };
-        let pattern = Pattern::parse(filter, CaseMatching::Smart, Normalization::Smart);
-        let mut matcher = Matcher::new(Config::DEFAULT);
-        let mut buf = Vec::new();
-        doc.headings()
-            .iter()
-            .enumerate()
-            .filter(|(_, h)| {
-                filter.is_empty()
-                    || pattern
-                        .score(Utf32Str::new(&h.text, &mut buf), &mut matcher)
-                        .is_some()
-            })
-            .map(|(i, h)| {
-                let indent = "  ".repeat(usize::from(h.level.saturating_sub(1)));
-                let style = if h.level <= 2 {
-                    Style::new().bold()
-                } else {
-                    Style::new()
-                };
-                (
-                    i,
-                    Line::from(vec![
-                        Span::raw(format!(" {indent}")),
-                        Span::styled(h.text.clone(), style),
-                    ]),
-                )
-            })
-            .collect()
-    }
-
-    pub(super) fn draw_outline(&mut self, f: &mut Frame) {
-        if !matches!(self.prompt, Some(Prompt::Outline { .. })) {
-            return;
-        }
-        let Some(Prompt::Outline { filter, list }) = self.prompt.take() else {
-            return;
-        };
-        let items = self.outline_items(&filter);
-        let area = f.area();
-        let widest = items.iter().map(|(_, l)| l.width()).max().unwrap_or(0);
-        let width = (widest as u16 + 4)
-            .clamp(30, area.width.saturating_sub(4).max(1))
-            .min(area.width);
-        let height = (items.len() as u16 + 3)
-            .min(area.height.saturating_sub(2))
-            .max(3)
-            .min(area.height);
-        let rect = Rect {
-            x: area.x + (area.width - width) / 2,
-            y: area.y + (area.height - height) / 2,
-            width,
-            height,
-        };
-        let block = Block::bordered()
-            .title(" Outline ")
-            .padding(Padding::horizontal(0));
-        let inner = block.inner(rect);
-        f.render_widget(Clear, rect);
-        f.render_widget(block, rect);
-        let list_area = Rect {
-            height: inner.height.saturating_sub(1),
-            ..inner
-        };
-        let filter_area = Rect {
-            y: inner.y + list_area.height,
-            height: 1,
-            ..inner
-        };
-        let mut state = list;
-        let widget = List::new(
-            items
-                .into_iter()
-                .map(|(_, l)| ListItem::new(l))
-                .collect::<Vec<_>>(),
-        )
-        .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-        f.render_stateful_widget(widget, list_area, &mut state);
-        let prompt = if filter.is_empty() {
-            Line::from(" type to filter, ⏎ to jump".dim())
-        } else {
-            Line::from(vec![
-                " ".into(),
-                Span::raw(filter.clone()),
-                "▏".slow_blink(),
-            ])
-        };
-        f.render_widget(Paragraph::new(prompt), filter_area);
-        self.prompt = Some(Prompt::Outline {
-            filter,
-            list: state,
-        });
     }
 
     /// The footer while a prompt is up.
@@ -400,7 +327,7 @@ impl App<'_> {
                 Span::raw(format!("type its letters {typed}")),
                 "  esc cancels".dim(),
             ]),
-            Prompt::Outline { .. } => Line::from(" ↑↓ choose  ⏎ jump  esc close".dim()),
+            Prompt::Pick(_) => Line::from(" ↑↓ choose  ⏎ go  esc close".dim()),
             Prompt::Open { target } => Line::from(vec![
                 " Open ".bold(),
                 Span::raw(target.clone()),

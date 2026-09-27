@@ -1,9 +1,12 @@
 //! The interactive browser and reader.
 
+mod links;
 mod nav;
+mod picker;
 
 use crate::doc::{Doc, Side, SourceSide, Split};
 use crate::files::{self, Entry};
+use crate::index::{self, Index};
 use crate::theme::Theme;
 use crate::wrap;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
@@ -73,6 +76,11 @@ struct App<'t> {
     root_label: String,
     files: Vec<Entry>,
     scan: Option<Receiver<Vec<Entry>>>,
+    /// The directory being browsed.
+    root: Option<PathBuf>,
+    /// Who links to whom, once it's built.
+    index: Option<Index>,
+    indexing: Option<Receiver<Index>>,
     by_time: bool,
     filter: String,
     typing: bool,
@@ -116,6 +124,9 @@ impl<'t> App<'t> {
             root_label: String::new(),
             files: Vec::new(),
             scan: None,
+            root: None,
+            index: None,
+            indexing: None,
             by_time: false,
             filter: String::new(),
             typing: false,
@@ -146,6 +157,7 @@ impl<'t> App<'t> {
             Source::Browse { root, open, all } => {
                 app.root_label = display_path(&root);
                 app.scan = Some(files::scan(&root, all));
+                app.root = Some(root);
                 if let Some(path) = open {
                     app.focus = Focus::Reader;
                     app.reading = Some(path.clone());
@@ -160,8 +172,9 @@ impl<'t> App<'t> {
         loop {
             self.receive();
             terminal.draw(|f| self.draw(f))?;
-            // While scanning, wake up now and then to show new files.
-            let wait = if self.scan.is_some() {
+            // While scanning or indexing, wake up now and then to show
+            // what's new.
+            let wait = if self.scan.is_some() || self.indexing.is_some() {
                 Duration::from_millis(50)
             } else {
                 Duration::from_secs(60)
@@ -178,8 +191,15 @@ impl<'t> App<'t> {
         }
     }
 
-    /// Takes in files the scan has found since last time.
+    /// Takes in files the scan has found since last time, and the link
+    /// index when it's ready.
     fn receive(&mut self) {
+        if let Some(rx) = &self.indexing
+            && let Ok(index) = rx.try_recv()
+        {
+            self.index = Some(index);
+            self.indexing = None;
+        }
         let Some(rx) = &self.scan else { return };
         let mut changed = false;
         loop {
@@ -192,6 +212,9 @@ impl<'t> App<'t> {
                 Err(TryRecvError::Disconnected) => {
                     self.scan = None;
                     changed = true;
+                    if let Some(root) = &self.root {
+                        self.indexing = Some(index::build(root, self.files.clone()));
+                    }
                     break;
                 }
             }
@@ -401,6 +424,7 @@ impl<'t> App<'t> {
                 self.refresh();
             }
             KeyCode::Esc => return true,
+            KeyCode::Char('L') => self.open_links(),
             KeyCode::Char('m') => {
                 self.by_time = !self.by_time;
                 self.refresh();
@@ -428,13 +452,11 @@ impl<'t> App<'t> {
         if !ctrl && self.nav_key(key) {
             return false;
         }
+        // Esc and Backspace with somewhere to go back to were handled above.
         match key.code {
-            KeyCode::Backspace if !browsing => return false,
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace => {
-                if !browsing {
-                    return true;
-                }
-                self.history.clear();
+            KeyCode::Char('q') => return true,
+            KeyCode::Esc if !browsing => return true,
+            KeyCode::Esc | KeyCode::Backspace if browsing => {
                 self.focus = Focus::List;
                 return false;
             }
@@ -479,8 +501,6 @@ impl<'t> App<'t> {
         ])
         .areas(f.area());
 
-        self.draw_header(f, header);
-
         let reader_only =
             self.text.is_some() || (self.focus == Focus::Reader && !self.list_in_reader);
         let narrow = body.width < 80;
@@ -509,14 +529,16 @@ impl<'t> App<'t> {
             self.draw_preview(f, doc_area);
         }
 
+        // After the document, so it's laid out and its links are known.
+        self.draw_header(f, header);
         self.draw_footer(f, footer);
-        self.draw_outline(f);
+        self.draw_picker(f);
         if self.help {
             draw_help(f);
         }
     }
 
-    fn draw_header(&self, f: &mut Frame, area: Rect) {
+    fn draw_header(&mut self, f: &mut Frame, area: Rect) {
         let summary = if let Some((title, _)) = &self.text {
             title.clone()
         } else {
@@ -536,13 +558,20 @@ impl<'t> App<'t> {
             }
             s
         };
+        let note = self.link_note();
+        let note_w = note.as_ref().map_or(0, |n| n.width() as u16);
+        let [title_area, note_area] =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(note_w)]).areas(area);
+        if let Some(note) = note {
+            f.render_widget(Paragraph::new(note), note_area);
+        }
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 " lsmd ".bold(),
                 Span::raw(" "),
                 summary.dim(),
             ])),
-            area,
+            title_area,
         );
     }
 
@@ -658,12 +687,12 @@ impl<'t> App<'t> {
             f.render_widget(Paragraph::new(line), area);
             return;
         }
-        let browsing = self.text.is_none();
+        let back = self.back_label();
         let tab = ("tab", if self.split { "hide source" } else { "source" });
         let mut reader = vec![
             ("↑↓", "scroll"),
             ("/", "search"),
-            ("f", "follow link"),
+            ("f", "follow"),
             ("o", "outline"),
             tab,
         ];
@@ -694,20 +723,8 @@ impl<'t> App<'t> {
                 keys.extend([("?", "help"), ("q", "quit")]);
                 keys
             }
-            Focus::Reader if browsing => {
-                reader.push((
-                    "\\",
-                    if self.list_in_reader {
-                        "hide list"
-                    } else {
-                        "show list"
-                    },
-                ));
-                reader.extend([("?", "help"), ("q", "back")]);
-                reader
-            }
             Focus::Reader => {
-                reader.extend([("?", "help"), ("q", "quit")]);
+                reader.extend([("esc", back.as_str()), ("?", "help"), ("q", "quit")]);
                 reader
             }
         };
@@ -789,13 +806,17 @@ fn draw_help(f: &mut Frame) {
     const KEYS: &[(&str, &str)] = &[
         ("↑↓ j k", "Move / scroll"),
         ("⏎ l →", "Read the selected file"),
-        ("esc q", "Back to the list, or quit from the list"),
+        (
+            "esc ⌫",
+            "Back to the last document, then the list; quits from the list",
+        ),
+        ("q", "Quit"),
         ("← → h l", "Scroll long code lines sideways (0: back)"),
         ("] [", "Next / previous heading"),
         ("o", "Outline: jump to a heading"),
+        ("L", "Links: what this links to, and what links here"),
         ("/ n N", "Search; next / previous match"),
         ("f", "Follow a link (type the letters shown on it)"),
-        ("⌫", "Back, after following a link"),
         ("space b", "Page down / up (the preview, in the list)"),
         ("d u", "Half page down / up"),
         ("g G", "Top / bottom"),

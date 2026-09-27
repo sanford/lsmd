@@ -446,6 +446,11 @@ impl Doc {
         f.render_widget(Paragraph::new(visible), area);
     }
 
+    /// Every link target in the document, in order, as written.
+    pub fn links(&self) -> &[String] {
+        &self.links
+    }
+
     pub fn headings(&self) -> &[Heading] {
         &self.headings
     }
