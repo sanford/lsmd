@@ -583,8 +583,7 @@ impl<'t> App<'t> {
             return false;
         }
         if let Some(prompt) = self.prompt.take() {
-            self.prompt_key(prompt, key, ctrl);
-            return false;
+            return self.prompt_key(prompt, key, ctrl);
         }
         if self.typing {
             self.filter_key(key, ctrl);

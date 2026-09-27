@@ -90,9 +90,9 @@ impl App<'_> {
         true
     }
 
-    /// Handles a key while `prompt` is up. The prompt stays up unless this
-    /// puts it back.
-    pub(super) fn prompt_key(&mut self, prompt: Prompt, key: KeyEvent, ctrl: bool) {
+    /// Handles a key while `prompt` is up. The prompt stays up only if this
+    /// puts it back. Returns true to quit.
+    pub(super) fn prompt_key(&mut self, prompt: Prompt, key: KeyEvent, ctrl: bool) -> bool {
         match prompt {
             Prompt::Search { mut query, from } => {
                 match key.code {
@@ -103,14 +103,14 @@ impl App<'_> {
                             doc.clear_search();
                             self.flash = Some(format!("Not found: {query}"));
                         }
-                        return;
+                        return false;
                     }
                     KeyCode::Esc => {
                         if let Some(doc) = self.current() {
                             doc.clear_search();
                             doc.jump_to(from);
                         }
-                        return;
+                        return false;
                     }
                     KeyCode::Backspace => {
                         query.pop();
@@ -125,10 +125,15 @@ impl App<'_> {
             }
             Prompt::Hints { mut typed } => {
                 let KeyCode::Char(c) = key.code else {
-                    return self.clear_hints();
+                    {
+                        self.clear_hints();
+                        return false;
+                    }
                 };
                 typed.push(c);
-                let Some(doc) = self.current() else { return };
+                let Some(doc) = self.current() else {
+                    return false;
+                };
                 let url = doc
                     .hints
                     .iter()
@@ -148,6 +153,7 @@ impl App<'_> {
                 Outcome::Stay => self.prompt = Some(Prompt::Pick(picker)),
                 Outcome::Close => {}
                 Outcome::Choose(target) => self.go(target),
+                Outcome::Quit => return true,
             },
             Prompt::Grep { mut query } => match key.code {
                 KeyCode::Esc => {}
@@ -171,6 +177,7 @@ impl App<'_> {
                 }
             }
         }
+        false
     }
 
     /// Labels the links on screen so one can be followed by typing.
@@ -362,7 +369,7 @@ impl App<'_> {
                 Span::raw(format!("type its letters {typed}")),
                 "  esc cancels".dim(),
             ]),
-            Prompt::Pick(_) => Line::from(" ↑↓ choose  ⏎ go  esc close".dim()),
+            Prompt::Pick(_) => Line::from(" ↑↓ move  / filter  ⏎ go  esc close  q quit".dim()),
             Prompt::Grep { query } => Line::from(vec![
                 " Search all files: ".bold(),
                 Span::raw(query.clone()),

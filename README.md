@@ -107,7 +107,7 @@ Reading:
 | `←` `→` `h` `l` | Scroll long code lines sideways (`0` back to the start) |
 | `/` `n` `N` | Search this document; next and previous match |
 | `]` `[` | Next and previous heading |
-| `o` | Outline: jump to a heading |
+| `o` | Outline: jump to a heading (in this and every popup: `↑` `↓` `j` `k` move, `/` filters, `Enter` goes) |
 | `O` | The outline beside the document, following along as you read. `O` also moves the keyboard to it: `↑` `↓` `j` `k` go through the headings with the document following, `/` filters them, `Enter` reads from there, `Esc` goes back to where you were |
 | `f` | Follow a link: type the letters drawn on it |
 | `L` | Links: what this links to, and what links here |

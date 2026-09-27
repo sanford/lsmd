@@ -4,7 +4,7 @@
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -58,14 +58,19 @@ pub enum Outcome {
     Stay,
     Close,
     Choose(Target),
+    Quit,
 }
 
 pub struct Picker {
     title: String,
     rows: Vec<Row>,
     filter: String,
+    /// Typing a filter, after `/`: letters go into it rather than moving.
+    typing: bool,
     /// Selection among the visible rows.
     list: ListState,
+    /// Rows on screen at the last draw, for paging.
+    page: usize,
 }
 
 impl Picker {
@@ -75,11 +80,15 @@ impl Picker {
             title,
             rows,
             filter: String::new(),
+            typing: false,
             list: ListState::default(),
+            page: 10,
         };
         match selected {
             Some(i) => picker.list.select(Some(i)),
-            None => picker.select_from(0, 1),
+            None => {
+                picker.select_from(0, 1);
+            }
         }
         picker
     }
@@ -105,49 +114,95 @@ impl Picker {
     }
 
     /// Selects the first choosable visible row from position `from`,
-    /// looking in direction `step`. Keeps the selection if there's none.
-    fn select_from(&mut self, from: isize, step: isize) {
+    /// looking in direction `step`. Returns whether it found one; if not,
+    /// keeps the selection (unless it's no longer visible).
+    fn select_from(&mut self, from: isize, step: isize) -> bool {
         let visible = self.visible();
         let mut i = from;
         while i >= 0 && (i as usize) < visible.len() {
             if self.rows[visible[i as usize]].target.is_some() {
                 self.list.select(Some(i as usize));
-                return;
+                return true;
             }
             i += step;
         }
         if self.list.selected().is_none_or(|s| s >= visible.len()) {
             self.list.select(None);
         }
+        false
     }
 
     pub fn key(&mut self, key: KeyEvent, ctrl: bool) -> Outcome {
-        let at = self.list.selected().map_or(-1, |s| s as isize);
+        let at = self.list.selected().map_or(0, |s| s as isize);
+        let page = self.page.max(1) as isize;
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let last = self.visible().len() as isize - 1;
+        // Keys that do the same whether or not a filter is being typed.
         match key.code {
-            KeyCode::Esc => return Outcome::Close,
-            KeyCode::Enter => {
-                let visible = self.visible();
-                let target = self.list.selected().and_then(|s| visible.get(s));
-                return match target.and_then(|&i| self.rows[i].target.clone()) {
-                    Some(t) => Outcome::Choose(t),
-                    None => Outcome::Close,
-                };
-            }
-            KeyCode::Down => self.select_from(at + 1, 1),
-            KeyCode::Up => self.select_from(at - 1, -1),
-            KeyCode::Char('n') if ctrl => self.select_from(at + 1, 1),
-            KeyCode::Char('p') if ctrl => self.select_from(at - 1, -1),
-            KeyCode::Backspace => {
-                self.filter.pop();
-                self.select_from(0, 1);
-            }
-            KeyCode::Char(c) if !ctrl => {
-                self.filter.push(c);
-                self.select_from(0, 1);
-            }
+            KeyCode::Enter => return self.choose(),
+            KeyCode::Down if shift => return self.move_to(at + page, 1),
+            KeyCode::Up if shift => return self.move_to(at - page, -1),
+            KeyCode::Down => return self.move_to(at + 1, 1),
+            KeyCode::Up => return self.move_to(at - 1, -1),
+            KeyCode::PageDown => return self.move_to(at + page, 1),
+            KeyCode::PageUp => return self.move_to(at - page, -1),
+            KeyCode::Char('n') if ctrl => return self.move_to(at + 1, 1),
+            KeyCode::Char('p') if ctrl => return self.move_to(at - 1, -1),
+            KeyCode::Char('c') if ctrl => return Outcome::Quit,
             _ => {}
         }
+        if self.typing {
+            match key.code {
+                KeyCode::Esc => {
+                    self.typing = false;
+                    self.filter.clear();
+                }
+                KeyCode::Backspace => {
+                    self.filter.pop();
+                }
+                KeyCode::Char(c) if !ctrl => self.filter.push(c),
+                _ => return Outcome::Stay,
+            }
+            self.select_from(0, 1);
+            return Outcome::Stay;
+        }
+        match key.code {
+            KeyCode::Esc => Outcome::Close,
+            KeyCode::Char('q') | KeyCode::Char('Q') => Outcome::Quit,
+            KeyCode::Char('/') => {
+                self.typing = true;
+                Outcome::Stay
+            }
+            KeyCode::Char('j') => self.move_to(at + 1, 1),
+            KeyCode::Char('k') => self.move_to(at - 1, -1),
+            KeyCode::Char('J') => self.move_to(at + page, 1),
+            KeyCode::Char('K') => self.move_to(at - page, -1),
+            KeyCode::Char('g') | KeyCode::Home => self.move_to(0, 1),
+            KeyCode::Char('G') | KeyCode::End => self.move_to(last, -1),
+            KeyCode::Char('l') | KeyCode::Right => self.choose(),
+            _ => Outcome::Stay,
+        }
+    }
+
+    /// Selects the nearest choosable row to position `to`, looking in
+    /// direction `step` (and back the other way at the ends).
+    fn move_to(&mut self, to: isize, step: isize) -> Outcome {
+        let last = self.visible().len() as isize - 1;
+        let to = to.clamp(0, last.max(0));
+        // Past the end there may be only a heading row: then look back.
+        if !self.select_from(to, step) {
+            self.select_from(to, -step);
+        }
         Outcome::Stay
+    }
+
+    fn choose(&self) -> Outcome {
+        let visible = self.visible();
+        let target = self.list.selected().and_then(|s| visible.get(s));
+        match target.and_then(|&i| self.rows[i].target.clone()) {
+            Some(t) => Outcome::Choose(t),
+            None => Outcome::Close,
+        }
     }
 
     pub fn draw(&mut self, f: &mut Frame) {
@@ -179,6 +234,7 @@ impl Picker {
             height: inner.height.saturating_sub(1),
             ..inner
         };
+        self.page = usize::from(list_area.height);
         let items: Vec<ListItem> = visible
             .iter()
             .map(|&i| ListItem::new(self.rows[i].line.clone()))
@@ -195,11 +251,11 @@ impl Picker {
             height: 1,
             ..inner
         };
-        let prompt = if self.filter.is_empty() {
-            Line::from(" type to filter, ⏎ to go".dim())
+        let prompt = if !self.typing {
+            Line::from(" / to filter, ⏎ to go".dim())
         } else {
             Line::from(vec![
-                " ".into(),
+                " /".into(),
                 Span::raw(self.filter.clone()),
                 "▏".slow_blink(),
             ])
@@ -259,8 +315,22 @@ mod tests {
     }
 
     #[test]
+    fn moves_with_j_and_k() {
+        let mut p = picker();
+        p.key(key(KeyCode::Char('j')), false);
+        assert_eq!(p.list.selected(), Some(2));
+        p.key(key(KeyCode::Char('j')), false);
+        assert_eq!(p.list.selected(), Some(4), "skips the heading row");
+        p.key(key(KeyCode::Char('k')), false);
+        assert_eq!(p.list.selected(), Some(2));
+        p.key(key(KeyCode::Char('G')), false);
+        assert_eq!(chosen(&mut p), Some(3));
+    }
+
+    #[test]
     fn filters_rows() {
         let mut p = picker();
+        p.key(key(KeyCode::Char('/')), false);
         p.key(key(KeyCode::Char('g')), false);
         p.key(key(KeyCode::Char('m')), false);
         assert_eq!(p.visible().len(), 1);
