@@ -213,21 +213,9 @@ impl App<'_> {
         Some(Place { path, top })
     }
 
-    /// Remembers that the reader was at line `top` of the current
-    /// document, for Esc to come back to.
-    pub(super) fn remember(&mut self, top: usize) {
-        self.history.push(Place {
-            path: self.reading.clone(),
-            top,
-        });
-    }
-
     /// Where Esc goes from the reader, for the footer.
     pub(super) fn back_label(&self) -> String {
         match self.history.last() {
-            Some(Place {
-                path: Some(path), ..
-            }) if Some(path) == self.reading.as_ref() => "back".into(),
             Some(Place {
                 path: Some(path), ..
             }) => {
@@ -253,7 +241,6 @@ impl App<'_> {
     /// Follows a link: to a heading, another Markdown file, or (after
     /// asking) a web page or other file opened by the system.
     pub(super) fn follow(&mut self, url: &str) {
-        let here = self.here();
         let Some(doc) = self.current() else { return };
         let Some(path) = render::local_path(url) else {
             match crate::open::web(url) {
@@ -267,10 +254,8 @@ impl App<'_> {
             // A heading in this document.
             let Some(anchor) = anchor else { return };
             match doc.anchor(&anchor) {
-                Some(line) => {
-                    doc.jump_to(line);
-                    self.history.extend(here);
-                }
+                // Within a document, so not one for Esc to come back from.
+                Some(line) => doc.jump_to(line),
                 None => self.flash = Some(format!("No heading #{anchor}")),
             }
             return;
@@ -316,10 +301,8 @@ impl App<'_> {
         }
         match target {
             Target::Line(line) => {
-                let here = self.here();
                 if let Some(doc) = self.current() {
                     doc.jump_to(line);
-                    self.history.extend(here);
                 }
             }
             Target::Link(url) => self.follow(&url),
@@ -334,11 +317,15 @@ impl App<'_> {
         }
     }
 
-    /// Opens a Markdown file in the reader, remembering where we were.
+    /// Opens a Markdown file in the reader. Esc comes back to where we were
+    /// if that was another document: Esc goes back between documents, not
+    /// around within one.
     fn open_path(&mut self, target: PathBuf, anchor: Option<String>) {
         let here = self.here();
         let target = std::fs::canonicalize(&target).unwrap_or(target);
-        self.history.extend(here);
+        if let Some(here) = here.filter(|h| h.path.as_ref() != Some(&target)) {
+            self.history.push(here);
+        }
         self.reading = Some(target.clone());
         self.focus = Focus::Reader;
         let doc = self.doc(&target);

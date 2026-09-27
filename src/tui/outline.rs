@@ -112,8 +112,10 @@ impl App<'_> {
         // Typing a filter: letters are text, and the arrows still move.
         if let Some(mut filter) = self.outline_filter.take() {
             match key.code {
+                // Esc, or deleting past the start, stops filtering.
                 KeyCode::Esc => return false,
-                KeyCode::Backspace => {
+                KeyCode::Backspace | KeyCode::Delete if filter.is_empty() => return false,
+                KeyCode::Backspace | KeyCode::Delete => {
                     filter.pop();
                 }
                 KeyCode::Char(c) if !ctrl => filter.push(c),
@@ -182,14 +184,10 @@ impl App<'_> {
         let at = shown.iter().position(|&i| i == sel).unwrap_or(0);
         let last = shown.len() - 1;
         let to = match code {
-            // Read from here. Esc in the reader then comes back to `from`.
+            // Read from here.
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                let moved = doc.top() != from;
                 self.outline_focus = None;
                 self.outline_filter = None;
-                if moved {
-                    self.remember(from);
-                }
                 return false;
             }
             KeyCode::Down if shift => at.saturating_add(page),

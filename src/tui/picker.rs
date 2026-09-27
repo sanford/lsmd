@@ -157,7 +157,11 @@ impl Picker {
                     self.typing = false;
                     self.filter.clear();
                 }
-                KeyCode::Backspace => {
+                // Deleting past the start stops filtering, like Esc.
+                KeyCode::Backspace | KeyCode::Delete if self.filter.is_empty() => {
+                    self.typing = false;
+                }
+                KeyCode::Backspace | KeyCode::Delete => {
                     self.filter.pop();
                 }
                 KeyCode::Char(c) if !ctrl => self.filter.push(c),
@@ -325,6 +329,19 @@ mod tests {
         assert_eq!(p.list.selected(), Some(2));
         p.key(key(KeyCode::Char('G')), false);
         assert_eq!(chosen(&mut p), Some(3));
+    }
+
+    #[test]
+    fn deleting_past_the_start_stops_filtering() {
+        let mut p = picker();
+        p.key(key(KeyCode::Char('/')), false);
+        p.key(key(KeyCode::Char('x')), false);
+        p.key(key(KeyCode::Backspace), false);
+        assert!(p.typing, "one character deleted, still filtering");
+        p.key(key(KeyCode::Backspace), false);
+        assert!(!p.typing);
+        p.key(key(KeyCode::Char('j')), false);
+        assert_eq!(p.list.selected(), Some(2), "j moves again");
     }
 
     #[test]
