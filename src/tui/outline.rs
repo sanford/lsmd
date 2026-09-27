@@ -29,8 +29,19 @@ impl App<'_> {
             .borders(Borders::LEFT)
             .border_style(Style::new().dim())
             .title(title);
-        let inner = block.inner(area);
+        let mut inner = block.inner(area);
         f.render_widget(block, area);
+        // A filter being typed goes at the top of the pane it narrows.
+        if let Some(filter) = &self.outline_filter {
+            let line = Line::from(vec![
+                " /".bold(),
+                Span::raw(filter.clone()).yellow(),
+                "▏".slow_blink(),
+            ]);
+            f.render_widget(Paragraph::new(line), Rect { height: 1, ..inner });
+            inner.y += 1;
+            inner.height = inner.height.saturating_sub(1);
+        }
         self.outline_area = inner;
         // With the keyboard, the pane shows its own selection; without, the
         // section the document is at.

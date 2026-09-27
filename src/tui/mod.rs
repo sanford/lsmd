@@ -825,7 +825,7 @@ impl<'t> App<'t> {
         f.render_widget(Paragraph::new(Line::from(title)), title_area);
     }
 
-    fn pane(&self, title: String, focused: bool) -> Block<'static> {
+    fn pane(&self, title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
         let block = Block::bordered().title(title);
         if focused {
             block
@@ -835,12 +835,23 @@ impl<'t> App<'t> {
     }
 
     fn draw_list(&mut self, f: &mut Frame, area: Rect) {
-        let title = if self.filter.is_empty() {
+        let count = if self.filter.is_empty() {
             format!(" Files ({}) ", self.files.len())
         } else {
             format!(" Files ({} of {}) ", self.shown.len(), self.files.len())
         };
-        let block = self.pane(title, self.focus == Focus::List);
+        // The filter shows on the list it narrows, not down in the footer.
+        let mut title = vec![Span::raw(count)];
+        if self.typing || !self.filter.is_empty() {
+            title.extend(["/".bold(), Span::raw(self.filter.clone()).yellow()]);
+            title.push(if self.typing {
+                "▏".slow_blink()
+            } else {
+                Span::raw("")
+            });
+            title.push(Span::raw(" "));
+        }
+        let block = self.pane(Line::from(title), self.focus == Focus::List);
         let inner = block.inner(area);
         self.list_height = inner.height.into();
         self.list_area = inner;
@@ -948,8 +959,8 @@ impl<'t> App<'t> {
         }
         if self.outline_focus.is_some() {
             let mut spans = vec![Span::raw(" ")];
-            let keys: &[(&str, &str)] = if let Some(filter) = &self.outline_filter {
-                spans.extend([" /".bold(), Span::raw(filter.clone()), "▏  ".slow_blink()]);
+            // A filter being typed shows in the outline pane itself.
+            let keys: &[(&str, &str)] = if self.outline_filter.is_some() {
                 &[("↑↓", "move"), ("⏎", "read here"), ("esc", "clear")]
             } else {
                 &[
@@ -969,12 +980,14 @@ impl<'t> App<'t> {
             return;
         }
         if self.typing {
-            let line = Line::from(vec![
-                " /".bold(),
-                Span::raw(self.filter.clone()),
-                "▏".slow_blink(),
-            ]);
-            f.render_widget(Paragraph::new(line), area);
+            // The filter itself shows in the list's border.
+            let keys = [("↑↓", "move"), ("⏎", "done"), ("esc", "clear")];
+            let mut spans = vec![Span::raw(" ")];
+            for (k, what) in keys {
+                spans.push(k.bold());
+                spans.push(Span::raw(format!(" {what}  ")).dim());
+            }
+            f.render_widget(Paragraph::new(Line::from(spans)), area);
             return;
         }
         // Esc clears a search before it goes back.
