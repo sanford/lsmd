@@ -12,6 +12,7 @@ use clap::Parser;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use doc::SourceSide;
 use theme::{Mode, Theme};
 
 /// Browse and read Markdown in the terminal.
@@ -36,6 +37,10 @@ struct Args {
     /// Start with the source shown beside the rendered text
     #[arg(short, long)]
     source: bool,
+
+    /// Which side of the split view the source goes on
+    #[arg(long, value_enum, value_name = "SIDE", default_value_t = SourceSide::Right)]
+    source_side: SourceSide,
 
     /// Print without colors or styles
     #[arg(short, long)]
@@ -66,7 +71,12 @@ fn run(args: Args) -> io::Result<()> {
 
     let source = source(args.path.as_deref(), args.all)?;
     if interactive {
-        return tui::run(source, &theme, width, args.source);
+        let settings = tui::Settings {
+            max_width: width,
+            split: args.source,
+            source_side: args.source_side,
+        };
+        return tui::run(source, &theme, settings);
     }
     let md = match source {
         tui::Source::Text { md, .. } => md,

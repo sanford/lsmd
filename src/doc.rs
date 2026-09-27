@@ -25,6 +25,24 @@ pub enum Side {
     Source,
 }
 
+/// How to lay out the split view.
+pub struct Split {
+    /// The source side's share of the width, in percent.
+    pub ratio: u16,
+    /// The side that has the keyboard.
+    pub focus: Side,
+    pub source_right: bool,
+    /// The widest to wrap the rendered side.
+    pub max_width: Option<usize>,
+}
+
+/// Which side of the split the source goes on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum SourceSide {
+    Left,
+    Right,
+}
+
 /// A top-level block: its source lines and the rendered lines it became.
 #[derive(Debug)]
 struct Block {
@@ -225,32 +243,23 @@ impl Doc {
         self.draw_rendered(f, area);
     }
 
-    /// Draws source and rendered side by side. `ratio` is the source's share
-    /// of the width, in percent.
-    pub fn draw_split(
-        &mut self,
-        f: &mut Frame,
-        area: Rect,
-        ratio: u16,
-        focus: Side,
-        max_width: Option<usize>,
-        theme: &Theme,
-    ) {
-        let source_w = (area.width * ratio / 100).max(1);
-        let source_area = Rect { width: source_w, ..area };
-        let bar_area = Rect {
-            x: area.x + source_w,
-            width: 1.min(area.width - source_w),
-            ..area
+    /// Draws source and rendered side by side.
+    pub fn draw_split(&mut self, f: &mut Frame, area: Rect, split: &Split, theme: &Theme) {
+        let source_w = (area.width * split.ratio / 100).clamp(1, area.width.max(1));
+        let rest = area.width - source_w;
+        // The rendered side gets a column of margin on each side, and a bar
+        // separates it from the source.
+        let (source_x, bar_x, rendered_x) = if split.source_right {
+            (area.x + rest, area.x + rest.saturating_sub(1), area.x + 1)
+        } else {
+            (area.x, area.x + source_w, area.x + source_w + 2)
         };
-        // A column of margin after the bar.
-        let rendered_area = Rect {
-            x: bar_area.x + 2,
-            width: area.width.saturating_sub(source_w + 2),
-            ..area
-        };
+        let source_area = Rect { x: source_x, width: source_w, ..area };
+        let bar_area = Rect { x: bar_x, width: rest.min(1), ..area };
+        let rendered_area = Rect { x: rendered_x, width: rest.saturating_sub(3), ..area };
+
         let mut width = usize::from(rendered_area.width).max(1);
-        if let Some(max) = max_width {
+        if let Some(max) = split.max_width {
             width = width.min(max);
         }
         self.layout(width, theme);
@@ -258,7 +267,7 @@ impl Doc {
         self.height = area.height.into();
         self.sync(true);
 
-        self.draw_source(f, source_area, focus == Side::Source, theme);
+        self.draw_source(f, source_area, split.focus == Side::Source, theme);
         let bar = vec![Line::from("│".dim()); area.height.into()];
         f.render_widget(Paragraph::new(bar), bar_area);
         self.draw_rendered(f, rendered_area);

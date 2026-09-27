@@ -1,6 +1,6 @@
 //! The interactive browser and reader.
 
-use crate::doc::{Doc, Side};
+use crate::doc::{Doc, Side, SourceSide, Split};
 use crate::files::{self, Entry};
 use crate::theme::Theme;
 use crate::wrap;
@@ -30,10 +30,19 @@ pub enum Source {
     },
 }
 
-/// With `split`, documents open with their source alongside.
-pub fn run(source: Source, theme: &Theme, max_width: Option<usize>, split: bool) -> io::Result<()> {
-    let mut app = App::new(source, theme, max_width);
-    app.split = split;
+/// How documents are shown.
+pub struct Settings {
+    /// The widest to wrap text.
+    pub max_width: Option<usize>,
+    /// Open documents with their source alongside.
+    pub split: bool,
+    pub source_side: SourceSide,
+}
+
+pub fn run(source: Source, theme: &Theme, settings: Settings) -> io::Result<()> {
+    let mut app = App::new(source, theme, settings.max_width);
+    app.split = settings.split;
+    app.source_right = settings.source_side == SourceSide::Right;
     let mut terminal = ratatui::init();
     let result = app.run(&mut terminal);
     ratatui::restore();
@@ -86,6 +95,7 @@ struct App<'t> {
     source_focus: bool,
     /// The source side's share of the split, in percent.
     ratio: u16,
+    source_right: bool,
     docs: HashMap<PathBuf, Doc>,
 }
 
@@ -114,6 +124,7 @@ impl<'t> App<'t> {
             split: false,
             source_focus: false,
             ratio: 50,
+            source_right: true,
             docs: HashMap::new(),
         };
         match source {
@@ -265,8 +276,12 @@ impl<'t> App<'t> {
             KeyCode::Tab => self.split = !self.split,
             KeyCode::BackTab if self.split => self.source_focus = !self.source_focus,
             KeyCode::Char('w') if ctrl && self.split => self.source_focus = !self.source_focus,
-            KeyCode::Char('<') if self.split => self.ratio = self.ratio.saturating_sub(5).max(20),
-            KeyCode::Char('>') if self.split => self.ratio = (self.ratio + 5).min(80),
+            // Move the divider, whichever side the source is on.
+            KeyCode::Char(c @ ('<' | '>')) if self.split => {
+                let wider = (c == '>') != self.source_right;
+                let ratio = if wider { self.ratio + 5 } else { self.ratio - 5 };
+                self.ratio = ratio.clamp(20, 80);
+            }
             _ => return false,
         }
         true
@@ -343,6 +358,7 @@ impl<'t> App<'t> {
                 self.filter.clear();
                 self.refresh();
             }
+            KeyCode::Esc => return true,
             KeyCode::Char('m') => {
                 self.by_time = !self.by_time;
                 self.refresh();
@@ -530,10 +546,15 @@ impl<'t> App<'t> {
             width = width.min(max);
         }
         let theme = self.theme;
-        let (split, ratio, side, max) = (self.split, self.ratio, self.side(), self.max_width);
+        let split = self.split.then(|| Split {
+            ratio: self.ratio,
+            focus: self.side(),
+            source_right: self.source_right,
+            max_width: self.max_width,
+        });
         if let Some(doc) = self.current() {
-            if split {
-                doc.draw_split(f, area, ratio, side, max, theme);
+            if let Some(split) = split {
+                doc.draw_split(f, area, &split, theme);
             } else {
                 doc.draw(f, area, width, theme);
             }
@@ -650,7 +671,7 @@ fn draw_help(f: &mut Frame) {
     const KEYS: &[(&str, &str)] = &[
         ("↑↓ j k", "Move / scroll"),
         ("⏎ l →", "Read the selected file"),
-        ("esc q", "Back to the list"),
+        ("esc q", "Back to the list, or quit from the list"),
         ("← → h l", "Scroll long code lines sideways (0: back)"),
         ("space b", "Page down / up (the preview, in the list)"),
         ("d u", "Half page down / up"),
@@ -660,7 +681,7 @@ fn draw_help(f: &mut Frame) {
         ("\\", "Show or hide the list while reading"),
         ("tab", "Show the source beside the rendered text"),
         ("^w ⇧tab", "Switch between source and rendered"),
-        ("< >", "Make the source narrower / wider"),
+        ("< >", "Move the divider left / right"),
         ("Q", "Quit from anywhere"),
     ];
     let key_width = KEYS.iter().map(|(k, _)| wrap::width(k)).max().unwrap_or(0);
