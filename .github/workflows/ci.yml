@@ -1,0 +1,49 @@
+name: CI
+
+# Windows only; macOS and Linux are tested by hand before each release.
+#
+# Pushes only, never pull requests: the job runs on a self-hosted runner, and
+# this repo is public, so code from forks must never reach it. (Pushes to a
+# fork run in the fork's own Actions, without our runner.)
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Runs the owner's accounts start (a push, a manual run, a re-run) go
+  # straight through. Anyone else's wait here, on a GitHub-hosted runner,
+  # until the owner approves them in the `approval` environment.
+  approve:
+    if: ${{ !contains(fromJSON('["sanford", "REDACTED"]'), github.triggering_actor) }}
+    runs-on: ubuntu-latest
+    environment: approval
+    steps:
+      - run: echo "Approved for ${{ github.triggering_actor }}"
+
+  windows:
+    needs: approve
+    if: ${{ !cancelled() && (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
+    runs-on: [self-hosted, Windows, X64]
+    # The toolchain is installed machine-wide in REDACTED, shared with the
+    # machine's own user, so the runner service needs no environment of its own.
+    env:
+      RUSTUP_HOME: REDACTED\rustup
+      CARGO_HOME: REDACTED\cargo
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - run: Add-Content $env:GITHUB_PATH 'REDACTED\cargo\bin'
+      - uses: actions/checkout@v5
+      - run: cargo test --locked --release
+      - run: cargo clippy --locked --release --all-targets -- -D warnings
+      # Neither step above leaves a lsmd.exe behind; tests build their own binaries.
+      - run: cargo build --locked --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lsmd-windows-x64
+          path: target/release/lsmd.exe
+          if-no-files-found: error

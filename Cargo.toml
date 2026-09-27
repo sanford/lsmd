@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "Browse and read Markdown in the terminal, full width, with source side by side"
 repository = "https://github.com/sanford/lsmd"
+license = "GPL-3.0-or-later"
+readme = "README.md"
+keywords = ["markdown", "reader", "terminal", "tui", "preview"]
+categories = ["command-line-utilities", "text-processing"]
 
 [dependencies]
 # Only to turn on use-dev-tty: without it, macOS can't read keys from the
