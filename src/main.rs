@@ -99,6 +99,7 @@ fn run(args: Args) -> io::Result<()> {
                 .unwrap_or(SourceSide::Right),
             mouse: !args.no_mouse && config.mouse.unwrap_or(true),
             by_date: config.sort == Some(config::Sort::Date),
+            outline: config.outline.unwrap_or(false),
         };
         return tui::run(source, &theme, settings);
     }

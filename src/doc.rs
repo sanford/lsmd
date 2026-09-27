@@ -126,6 +126,8 @@ pub struct Doc {
     /// Where each side was drawn last, for the mouse. The source's is
     /// empty when it isn't shown.
     rendered_area: Rect,
+    /// Where the scrollbar was drawn (empty when there was none).
+    scrollbar: Rect,
     source_area: Rect,
 }
 
@@ -156,6 +158,7 @@ impl Doc {
             lead: Side::Rendered,
             height: 0,
             rendered_area: Rect::default(),
+            scrollbar: Rect::default(),
             source_area: Rect::default(),
         }
     }
@@ -412,6 +415,7 @@ impl Doc {
             })
             .collect();
         f.render_widget(Paragraph::new(visible), area);
+        self.draw_scrollbar(f, area);
 
         let style = Style::new().black().on_yellow().bold();
         for hint in &self.hints {
@@ -429,6 +433,87 @@ impl Doc {
                 );
             }
         }
+    }
+
+    /// A scrollbar in the column right of `area`, when the document is
+    /// longer than the screen and there's a free column: where you are, how
+    /// much there is, and a tick at each top-level heading.
+    fn draw_scrollbar(&mut self, f: &mut Frame, area: Rect) {
+        self.scrollbar = Rect::default();
+        let total = self.lines.len();
+        let h = usize::from(area.height);
+        if total <= h || h == 0 || area.right() >= f.area().right() {
+            return;
+        }
+        let bar = Rect {
+            x: area.right(),
+            width: 1,
+            ..area
+        };
+        self.scrollbar = bar;
+        let row_of = |line: usize| (line * h / total).min(h - 1);
+        let thumb = row_of(self.top)..=row_of(self.top + h - 1);
+        let mut ticks: Vec<usize> = self
+            .headings
+            .iter()
+            .filter(|hd| hd.level <= 2)
+            .map(|hd| row_of(hd.line))
+            .collect();
+        ticks.dedup();
+        // Ticks on most rows would say nothing: only show them sparse.
+        if ticks.len() > h / 3 {
+            ticks.clear();
+        }
+        let buf = f.buffer_mut();
+        for r in 0..h {
+            let (symbol, style) = if thumb.contains(&r) {
+                ("┃", Style::new())
+            } else if ticks.contains(&r) {
+                ("├", Style::new().dim())
+            } else {
+                ("│", Style::new().dim())
+            };
+            buf[(bar.x, bar.y + r as u16)]
+                .set_symbol(symbol)
+                .set_style(style);
+        }
+    }
+
+    /// If (x, y) is on the scrollbar, scrolls to put that point of the
+    /// document in the middle of the screen, and returns true.
+    pub fn scrollbar_jump(&mut self, x: u16, y: u16) -> bool {
+        let bar = self.scrollbar;
+        if bar.width == 0 || x != bar.x || y < bar.y || y >= bar.bottom() {
+            return false;
+        }
+        let line = usize::from(y - bar.y) * self.lines.len() / usize::from(bar.height);
+        self.lead = Side::Rendered;
+        self.top = line
+            .saturating_sub(self.height / 2)
+            .min(self.max_top(Side::Rendered));
+        true
+    }
+
+    /// The heading of the section at the top of the screen, as an index
+    /// into [`Doc::headings`].
+    pub fn current_heading(&self) -> Option<usize> {
+        self.headings.iter().rposition(|h| h.line <= self.top)
+    }
+
+    /// The headings leading to the section at the top of the screen, from
+    /// the outermost: ["Install", "Installing Rust on Windows"].
+    pub fn section(&self) -> Vec<&str> {
+        let Some(current) = self.current_heading() else {
+            return Vec::new();
+        };
+        let mut trail: Vec<&Heading> = Vec::new();
+        for h in &self.headings[..=current] {
+            while trail.last().is_some_and(|t| t.level >= h.level) {
+                trail.pop();
+            }
+            trail.push(h);
+        }
+        trail.iter().map(|h| h.text.as_str()).collect()
     }
 
     /// Line `i` with any search matches on it highlighted.
@@ -867,6 +952,21 @@ mod tests {
             .position(|l| l.src == Some((3, 5)))
             .unwrap();
         assert_eq!(doc.rendered_pos(table), 3.0);
+    }
+
+    #[test]
+    fn knows_the_section_at_the_top() {
+        let md =
+            "# Guide\n\nintro\n\n## Install\n\ntext\n\n### On Windows\n\nmore\n\n## Usage\n\nend\n";
+        let mut doc = Doc::new(md.into());
+        doc.layout(80, &Theme::plain());
+        doc.height = 1;
+        assert_eq!(doc.section(), ["Guide"]);
+        let windows = doc.headings[2].line;
+        doc.top = windows + 2;
+        assert_eq!(doc.section(), ["Guide", "Install", "On Windows"]);
+        doc.top = doc.headings[3].line;
+        assert_eq!(doc.section(), ["Guide", "Usage"]);
     }
 
     #[test]

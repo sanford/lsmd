@@ -27,6 +27,20 @@ impl App<'_> {
             }
             return;
         }
+        // The scrollbar and the outline pane take clicks and drags.
+        if matches!(
+            m.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)
+        ) {
+            if let Some(doc) = self.current()
+                && doc.scrollbar_jump(x, y)
+            {
+                return;
+            }
+            if m.kind == MouseEventKind::Down(MouseButton::Left) && self.outline_click(x, y) {
+                return;
+            }
+        }
         let over_list = self.list_area.contains(Position { x, y });
         match m.kind {
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp if over_list => {

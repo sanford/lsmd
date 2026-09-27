@@ -9,6 +9,7 @@
 //! mouse = false           # leave the mouse to the terminal
 //! all = true              # list hidden and .gitignored files too
 //! sort = "date"           # name or date
+//! outline = true          # show the outline pane beside documents
 //! ```
 
 use crate::doc::SourceSide;
@@ -33,6 +34,7 @@ pub struct Config {
     pub mouse: Option<bool>,
     pub all: Option<bool>,
     pub sort: Option<Sort>,
+    pub outline: Option<bool>,
 }
 
 pub fn path() -> Option<PathBuf> {

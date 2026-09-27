@@ -24,7 +24,7 @@ Documentation piles up. A project that's been worked on for a while, especially 
 
 ![Reading a document reached by following a link; the footer says "esc back to DESIGN.md"](docs/images/reader.png)
 
-**Find your place in a long document.** `/` searches it, `]` and `[` jump between headings, and `o` opens an outline you can filter.
+**Find your place in a long document.** The header always shows which section you're in (`§ Install › On Windows`), and a scrollbar shows where you are; click or drag it to jump. `/` searches the document, `]` and `[` jump between headings, `o` opens an outline you can filter, and `O` keeps the outline beside the text, highlighting the section you're reading.
 
 **Stays current.** Documents reload as they're edited, keeping your place, so `lsmd` works beside your editor, or beside an agent that's writing. `e` opens your editor at the line you're reading.
 
@@ -108,6 +108,7 @@ Reading:
 | `/` `n` `N` | Search this document; next and previous match |
 | `]` `[` | Next and previous heading |
 | `o` | Outline: jump to a heading |
+| `O` | Keep the outline beside the document, following along as you scroll |
 | `f` | Follow a link: type the letters drawn on it |
 | `L` | Links: what this links to, and what links here |
 | `Esc` `Backspace` | Back to where you were before following a link; then the list |
@@ -125,7 +126,7 @@ Anywhere:
 | `\` | Keep the file list on screen while reading |
 | `?` | All of the above |
 
-The mouse works too: the wheel scrolls what's under it, clicking a file selects it and clicking again opens it, and clicking a link follows it. `--no-mouse` leaves the mouse to the terminal, so you can select text without holding a modifier key.
+The mouse works too: the wheel scrolls what's under it, the scrollbar and the outline jump where you click, clicking a file selects it and clicking again opens it, and clicking a link follows it. `--no-mouse` leaves the mouse to the terminal, so you can select text without holding a modifier key.
 
 ### Links between documents
 
@@ -149,6 +150,7 @@ source-side = "left"    # left or right
 mouse = false           # leave the mouse to the terminal
 all = true              # list hidden and .gitignored files too
 sort = "date"           # name or date
+outline = true          # show the outline beside documents
 ```
 
 ## License

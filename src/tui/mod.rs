@@ -3,6 +3,7 @@
 mod links;
 mod mouse;
 mod nav;
+mod outline;
 mod picker;
 mod search_all;
 
@@ -51,6 +52,8 @@ pub struct Settings {
     pub mouse: bool,
     /// Sort the list newest first.
     pub by_date: bool,
+    /// Open documents with the outline pane beside them.
+    pub outline: bool,
 }
 
 pub fn run(source: Source, theme: &Theme, settings: Settings) -> io::Result<()> {
@@ -60,6 +63,7 @@ pub fn run(source: Source, theme: &Theme, settings: Settings) -> io::Result<()> 
     let mut terminal = ratatui::init();
     app.mouse_on = settings.mouse;
     app.by_time = settings.by_date;
+    app.outline_pane = settings.outline;
     set_mouse(app.mouse_on, true);
     if app.mouse_on {
         // ratatui's panic hook restores the terminal, but doesn't know
@@ -143,6 +147,11 @@ struct App<'t> {
     reading: Option<PathBuf>,
     /// Keep the file list on screen while reading.
     list_in_reader: bool,
+    /// Show the outline pane beside the document while reading.
+    outline_pane: bool,
+    /// Where the outline pane's rows were drawn (empty when it isn't shown).
+    outline_area: Rect,
+    outline_list: ListState,
     help: bool,
     /// Show the source beside the rendered document.
     split: bool,
@@ -195,6 +204,9 @@ impl<'t> App<'t> {
             focus: Focus::List,
             reading: None,
             list_in_reader: false,
+            outline_pane: false,
+            outline_area: Rect::default(),
+            outline_list: ListState::default(),
             help: false,
             split: false,
             source_focus: false,
@@ -527,6 +539,7 @@ impl<'t> App<'t> {
             KeyCode::Char('e') if !ctrl => self.start_edit(),
             KeyCode::Char('y') if !ctrl => self.copy_code(),
             KeyCode::Char('Y') => self.copy_path(),
+            KeyCode::Char('O') => self.outline_pane = !self.outline_pane,
             KeyCode::Char('s') if !ctrl => {
                 self.prompt = Some(nav::Prompt::Grep {
                     query: String::new(),
@@ -779,14 +792,21 @@ impl<'t> App<'t> {
         if let Some(note) = note {
             f.render_widget(Paragraph::new(note), note_area);
         }
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                " lsmd ".bold(),
-                Span::raw(" "),
-                summary.dim(),
-            ])),
-            title_area,
-        );
+        let mut title = vec![" lsmd ".bold(), Span::raw(" "), summary.clone().dim()];
+        // Reading: which section the top of the screen is in.
+        let section: Vec<String> = match self.focus {
+            Focus::Reader => self
+                .current()
+                .map(|d| d.section().iter().map(|s| s.to_string()).collect())
+                .unwrap_or_default(),
+            Focus::List => Vec::new(),
+        };
+        let room = usize::from(title_area.width).saturating_sub(wrap::width(&summary) + 12);
+        if let Some(trail) = section_trail(&section, room) {
+            title.push(Span::raw("  § ").dim());
+            title.push(Span::raw(trail));
+        }
+        f.render_widget(Paragraph::new(Line::from(title)), title_area);
     }
 
     fn pane(&self, title: String, focused: bool) -> Block<'static> {
@@ -856,6 +876,19 @@ impl<'t> App<'t> {
     }
 
     fn draw_doc(&mut self, f: &mut Frame, area: Rect) {
+        self.outline_area = Rect::default();
+        let mut area = area;
+        let mut pane = None;
+        if self.outline_pane && self.focus == Focus::Reader {
+            let w = Self::outline_width(area.width);
+            pane = Some(Rect {
+                x: area.right() - w,
+                width: w,
+                ..area
+            });
+            // Leave a column for the scrollbar, and one more for air.
+            area.width = area.width.saturating_sub(w + 2);
+        }
         let mut width = usize::from(area.width);
         if let Some(max) = self.max_width {
             width = width.min(max);
@@ -873,6 +906,10 @@ impl<'t> App<'t> {
             } else {
                 doc.draw(f, area, width, theme);
             }
+        }
+        // After the document, so it shows the section it's scrolled to.
+        if let Some(pane) = pane {
+            self.draw_outline_pane(f, pane);
         }
     }
 
@@ -1041,6 +1078,7 @@ fn draw_help(f: &mut Frame) {
         ("← → h l", "Scroll long code lines sideways (0: back)"),
         ("] [", "Next / previous heading"),
         ("o", "Outline: jump to a heading"),
+        ("O", "Keep the outline beside the document"),
         ("L", "Links: what this links to, and what links here"),
         ("s", "Search the text of every file"),
         ("e", "Edit the file in $EDITOR, at this point"),
@@ -1090,6 +1128,20 @@ fn draw_help(f: &mut Frame) {
         ),
         rect,
     );
+}
+
+/// "Install › On Windows", dropping outer sections to fit `room` columns.
+fn section_trail(section: &[String], room: usize) -> Option<String> {
+    for skip in 0..section.len() {
+        let mut trail = section[skip..].join(" › ");
+        if skip > 0 {
+            trail.insert_str(0, "… › ");
+        }
+        if wrap::width(&trail) <= room || skip + 1 == section.len() {
+            return Some(trail);
+        }
+    }
+    None
 }
 
 /// `path` with the home directory shown as `~`.
@@ -1148,6 +1200,18 @@ mod tests {
         let app = scanned(&dir, None, &theme);
         assert_eq!(app.selected().unwrap().rel, "a.md");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn section_trail_drops_outer_sections_to_fit() {
+        let s: Vec<String> = ["Guide", "Install", "On Windows"].map(String::from).into();
+        assert_eq!(
+            section_trail(&s, 80).unwrap(),
+            "Guide › Install › On Windows"
+        );
+        assert_eq!(section_trail(&s, 25).unwrap(), "… › Install › On Windows");
+        assert_eq!(section_trail(&s, 5).unwrap(), "… › On Windows");
+        assert_eq!(section_trail(&[], 80), None);
     }
 
     #[test]

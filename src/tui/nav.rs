@@ -290,7 +290,7 @@ impl App<'_> {
     }
 
     /// Goes where a picker row points.
-    fn go(&mut self, target: Target) {
+    pub(super) fn go(&mut self, target: Target) {
         // Chosen from the list: read that document, with Esc going back to
         // the list rather than to the document that was being previewed.
         let from_list = self.focus == Focus::List;
