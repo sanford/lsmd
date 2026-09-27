@@ -8,6 +8,7 @@ use crate::doc::{Doc, Side, SourceSide, Split};
 use crate::files::{self, Entry};
 use crate::index::{self, Index};
 use crate::theme::Theme;
+use crate::watch::Watch;
 use crate::wrap;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
@@ -78,6 +79,10 @@ struct App<'t> {
     scan: Option<Receiver<Vec<Entry>>>,
     /// The directory being browsed.
     root: Option<PathBuf>,
+    /// List hidden and ignored files too.
+    all: bool,
+    /// Watches the root and open documents for changes.
+    watch: Option<Watch>,
     /// Who links to whom, once it's built.
     index: Option<Index>,
     indexing: Option<Receiver<Index>>,
@@ -125,6 +130,8 @@ impl<'t> App<'t> {
             files: Vec::new(),
             scan: None,
             root: None,
+            all: false,
+            watch: None,
             index: None,
             indexing: None,
             by_time: false,
@@ -153,11 +160,17 @@ impl<'t> App<'t> {
             Source::Text { title, md } => {
                 app.text = Some((title, Doc::new(md)));
                 app.focus = Focus::Reader;
+                app.watch = Watch::new();
             }
             Source::Browse { root, open, all } => {
                 app.root_label = display_path(&root);
                 app.scan = Some(files::scan(&root, all));
+                app.watch = Watch::new();
+                if let Some(watch) = &mut app.watch {
+                    watch.add(&root);
+                }
                 app.root = Some(root);
+                app.all = all;
                 if let Some(path) = open {
                     app.focus = Focus::Reader;
                     app.reading = Some(path.clone());
@@ -176,6 +189,8 @@ impl<'t> App<'t> {
             // what's new.
             let wait = if self.scan.is_some() || self.indexing.is_some() {
                 Duration::from_millis(50)
+            } else if self.watch.is_some() {
+                Duration::from_millis(250)
             } else {
                 Duration::from_secs(60)
             };
@@ -194,6 +209,7 @@ impl<'t> App<'t> {
     /// Takes in files the scan has found since last time, and the link
     /// index when it's ready.
     fn receive(&mut self) {
+        self.reload();
         if let Some(rx) = &self.indexing
             && let Ok(index) = rx.try_recv()
         {
@@ -282,14 +298,60 @@ impl<'t> App<'t> {
             .select(index.or((!self.shown.is_empty()).then_some(0)));
     }
 
-    /// The document for `path`, reloaded if the file has changed.
+    /// The document for `path`, loading it the first time. (Changes to
+    /// it are picked up by [`App::reload`].)
     fn doc(&mut self, path: &Path) -> &mut Doc {
-        let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        let stale = self.docs.get(path).is_none_or(|d| d.modified != modified);
-        if stale {
+        if !self.docs.contains_key(path) {
+            // Files outside the root aren't watched yet.
+            if let Some(watch) = &mut self.watch {
+                watch.add(path);
+            }
             self.docs.insert(path.to_path_buf(), Doc::load(path));
         }
         self.docs.get_mut(path).unwrap()
+    }
+
+    /// Catches up with files that have changed: open documents re-render
+    /// in place, and the file list and link index follow.
+    fn reload(&mut self) {
+        let Some(watch) = &self.watch else { return };
+        let changed = watch.changed();
+        let mut list_changed = false;
+        for path in changed.into_iter().filter(|p| files::is_markdown(p)) {
+            let exists = path.is_file();
+            if let Some(doc) = self.docs.get_mut(&path)
+                && exists
+            {
+                doc.reload(&path);
+            }
+            let Some(rel) = self.rel_of(&path) else {
+                continue;
+            };
+            if let Some(index) = &mut self.index {
+                index.refresh(&rel, &path);
+            }
+            // New files in hidden directories stay out, as in the scan.
+            if !self.all && rel.split('/').any(|part| part.starts_with('.')) {
+                continue;
+            }
+            let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            match self.files.iter().position(|e| e.path == path) {
+                Some(i) if exists => self.files[i].modified = modified,
+                Some(i) => {
+                    self.files.remove(i);
+                }
+                None if exists => self.files.push(Entry {
+                    path,
+                    rel,
+                    modified,
+                }),
+                None => continue,
+            }
+            list_changed = true;
+        }
+        if list_changed {
+            self.refresh();
+        }
     }
 
     /// The document on screen: the one being read, or else the selected one.

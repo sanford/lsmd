@@ -7,6 +7,7 @@ mod index;
 mod render;
 mod theme;
 mod tui;
+mod watch;
 mod wrap;
 
 use clap::Parser;

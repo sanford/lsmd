@@ -31,16 +31,19 @@ struct FileLinks {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Stored {
+struct Stored<Files> {
     version: u32,
     root: String,
-    files: HashMap<String, FileLinks>,
+    files: Files,
 }
 
 pub struct Index {
     files: HashMap<String, FileLinks>,
     /// For each file, the files that link to it, sorted.
     backlinks: HashMap<String, Vec<String>>,
+    root: String,
+    /// Where the index is kept between runs.
+    cache: Option<PathBuf>,
 }
 
 impl Index {
@@ -52,6 +55,60 @@ impl Index {
     /// The files that link to `rel`.
     pub fn linked_from(&self, rel: &str) -> &[String] {
         self.backlinks.get(rel).map_or(&[], Vec::as_slice)
+    }
+
+    /// Re-indexes the file at `rel` (under the root, at `path`) after it
+    /// changed or was deleted, and saves the index.
+    pub fn refresh(&mut self, rel: &str, path: &Path) {
+        if path.is_file() {
+            let (links, changed) = read(path, rel, self.files.remove(rel));
+            self.files.insert(rel.to_string(), links);
+            if !changed {
+                return;
+            }
+        } else if self.files.remove(rel).is_none() {
+            return;
+        }
+        self.relink();
+        self.save();
+    }
+
+    /// Rebuilds the backlinks from the links.
+    fn relink(&mut self) {
+        self.backlinks.clear();
+        for (from, f) in &self.files {
+            for to in &f.links {
+                if to != from {
+                    self.backlinks
+                        .entry(to.clone())
+                        .or_default()
+                        .push(from.clone());
+                }
+            }
+        }
+        for list in self.backlinks.values_mut() {
+            list.sort();
+        }
+    }
+
+    /// Writes the index, via a temporary file so a crash can't leave half
+    /// of one. Failing to save only costs speed next time, so errors are
+    /// ignored.
+    fn save(&self) {
+        let Some(path) = &self.cache else { return };
+        let Some(dir) = path.parent() else { return };
+        let stored = Stored {
+            version: VERSION,
+            root: self.root.clone(),
+            files: &self.files,
+        };
+        let Ok(json) = serde_json::to_vec(&stored) else {
+            return;
+        };
+        let tmp = path.with_extension("tmp");
+        if std::fs::create_dir_all(dir).is_ok() && std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
     }
 }
 
@@ -67,63 +124,61 @@ pub fn build(root: &Path, entries: Vec<Entry>) -> Receiver<Index> {
 
 /// Indexes `entries`, reusing and then updating what's stored in `cache`.
 fn update(root: &Path, entries: &[Entry], cache: Option<PathBuf>) -> Index {
-    let root_str = root.to_string_lossy().into_owned();
+    let root = root.to_string_lossy().into_owned();
     let mut old = cache
         .as_deref()
         .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice::<Stored>(&b).ok())
-        .filter(|s| s.version == VERSION && s.root == root_str)
+        .and_then(|b| serde_json::from_slice::<Stored<HashMap<String, FileLinks>>>(&b).ok())
+        .filter(|s| s.version == VERSION && s.root == root)
         .map(|s| s.files)
         .unwrap_or_default();
 
     let mut changed = old.len() != entries.len();
     let mut files = HashMap::with_capacity(entries.len());
     for e in entries {
-        let meta = std::fs::metadata(&e.path).ok();
-        let size = meta.as_ref().map_or(0, |m| m.len());
-        let modified = meta.and_then(|m| m.modified().ok()).and_then(stamp);
-        let links = match old.remove(&e.rel) {
-            Some(f) if f.size == size && f.modified == modified && modified.is_some() => f,
-            _ => {
-                changed = true;
-                let md = std::fs::read(&e.path)
-                    .map(|b| String::from_utf8_lossy(&b).into_owned())
-                    .unwrap_or_default();
-                let (title, links) = extract(&md, &e.rel);
-                FileLinks {
-                    modified,
-                    size,
-                    title,
-                    links,
-                }
-            }
-        };
+        let (links, fresh) = read(&e.path, &e.rel, old.remove(&e.rel));
+        changed |= fresh;
         files.insert(e.rel.clone(), links);
     }
+    let mut index = Index {
+        files,
+        backlinks: HashMap::new(),
+        root,
+        cache,
+    };
+    index.relink();
+    if changed {
+        index.save();
+    }
+    index
+}
 
-    if changed && let Some(cache) = cache {
-        save(
-            &cache,
-            &Stored {
-                version: VERSION,
-                root: root_str,
-                files: files.clone(),
-            },
-        );
+/// The links of the file at `path`: `old` if it's still up to date, or
+/// else read afresh (and then the bool is true).
+fn read(path: &Path, rel: &str, old: Option<FileLinks>) -> (FileLinks, bool) {
+    let meta = std::fs::metadata(path).ok();
+    let size = meta.as_ref().map_or(0, |m| m.len());
+    let modified = meta.and_then(|m| m.modified().ok()).and_then(stamp);
+    if let Some(f) = old
+        && f.size == size
+        && f.modified == modified
+        && modified.is_some()
+    {
+        return (f, false);
     }
-
-    let mut backlinks: HashMap<String, Vec<String>> = HashMap::new();
-    for (from, f) in &files {
-        for to in &f.links {
-            if to != from {
-                backlinks.entry(to.clone()).or_default().push(from.clone());
-            }
-        }
-    }
-    for list in backlinks.values_mut() {
-        list.sort();
-    }
-    Index { files, backlinks }
+    let md = std::fs::read(path)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    let (title, links) = extract(&md, rel);
+    (
+        FileLinks {
+            modified,
+            size,
+            title,
+            links,
+        },
+        true,
+    )
 }
 
 /// The first heading of a document, and the Markdown files it links to,
@@ -197,19 +252,6 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     })
 }
 
-/// Writes the index, via a temporary file so a crash can't leave half of one.
-/// Failing to save only costs speed next time, so errors are ignored.
-fn save(path: &Path, stored: &Stored) {
-    let Some(dir) = path.parent() else { return };
-    let Ok(json) = serde_json::to_vec(stored) else {
-        return;
-    };
-    let tmp = path.with_extension("tmp");
-    if std::fs::create_dir_all(dir).is_ok() && std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,8 +316,16 @@ mod tests {
         assert!(cache.exists());
 
         // A second run reads the cache and gets the same answer.
-        let again = update(&dir, &entries, Some(cache));
+        let mut again = update(&dir, &entries, Some(cache));
         assert_eq!(again.files, index.files);
+
+        // Editing a file updates its links; deleting it drops them.
+        std::fs::write(dir.join("docs/other.md"), "no links now, but longer\n").unwrap();
+        again.refresh("docs/other.md", &dir.join("docs/other.md"));
+        assert_eq!(again.linked_from("docs/guide.md"), ["README.md"]);
+        std::fs::remove_file(dir.join("README.md")).unwrap();
+        again.refresh("README.md", &dir.join("README.md"));
+        assert!(again.linked_from("docs/guide.md").is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

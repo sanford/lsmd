@@ -90,6 +90,10 @@ pub struct Doc {
     pub hints: Vec<Hint>,
     /// A heading to jump to once the document is laid out.
     pending_anchor: Option<String>,
+    /// After a reload: the first line with text at or below the top of the
+    /// screen, how far below the top it was, and its old index, to find
+    /// the same place in the new text.
+    keep: Option<(String, usize, usize)>,
     /// When the file was last modified, as of loading it.
     pub modified: Option<SystemTime>,
 
@@ -124,6 +128,7 @@ impl Doc {
             search: None,
             hints: Vec::new(),
             pending_anchor: None,
+            keep: None,
             modified: None,
             lines: Vec::new(),
             blocks: Vec::new(),
@@ -154,6 +159,30 @@ impl Doc {
         }
     }
 
+    /// Reads the file again after it's changed. The next draw re-renders
+    /// it, keeping the same part of the document on screen.
+    pub fn reload(&mut self, path: &Path) {
+        let fresh = Doc::load(path);
+        self.keep = self.lines[self.top.min(self.lines.len())..]
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                (
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>(),
+                    i,
+                )
+            })
+            .find(|(text, _)| !text.trim().is_empty())
+            .map(|(text, offset)| (text, offset, self.top + offset));
+        self.md = fresh.md;
+        self.modified = fresh.modified;
+        self.width = 0;
+        self.source_width = 0;
+    }
+
     /// Wraps the rendered view for `width`, keeping the same part of the
     /// document at the top.
     fn layout(&mut self, width: usize, theme: &Theme) {
@@ -179,6 +208,19 @@ impl Doc {
             .unwrap_or(0);
         self.left = self.left.min(self.max_left);
         self.top = pos.map_or(0, |p| self.rendered_top_for(p));
+        if let Some((text, offset, old)) = self.keep.take() {
+            // The same text nearest where it was, if it's still there.
+            let same = self.lines.iter().enumerate().filter(|(_, l)| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    == text
+            });
+            if let Some((i, _)) = same.min_by_key(|(i, _)| i.abs_diff(old)) {
+                self.top = i.saturating_sub(offset);
+            }
+        }
         if let Some(slug) = self.pending_anchor.take() {
             self.go_to_anchor(&slug);
         }
