@@ -152,6 +152,11 @@ struct App<'t> {
     /// Where the outline pane's rows were drawn (empty when it isn't shown).
     outline_area: Rect,
     outline_list: ListState,
+    /// The outline pane has the keyboard: the heading selected in it, and
+    /// where the document was when it took the keyboard.
+    outline_focus: Option<(usize, usize)>,
+    /// Text typed after `/` in the outline, narrowing its headings.
+    outline_filter: Option<String>,
     help: bool,
     /// Show the source beside the rendered document.
     split: bool,
@@ -207,6 +212,8 @@ impl<'t> App<'t> {
             outline_pane: false,
             outline_area: Rect::default(),
             outline_list: ListState::default(),
+            outline_focus: None,
+            outline_filter: None,
             help: false,
             split: false,
             source_focus: false,
@@ -539,6 +546,7 @@ impl<'t> App<'t> {
             KeyCode::Char('e') if !ctrl => self.start_edit(),
             KeyCode::Char('y') if !ctrl => self.copy_code(),
             KeyCode::Char('Y') => self.copy_path(),
+            KeyCode::Char('O') if self.focus == Focus::Reader => self.focus_outline(),
             KeyCode::Char('O') => self.outline_pane = !self.outline_pane,
             KeyCode::Char('s') if !ctrl => {
                 self.prompt = Some(nav::Prompt::Grep {
@@ -581,6 +589,13 @@ impl<'t> App<'t> {
         if self.typing {
             self.filter_key(key, ctrl);
             return false;
+        }
+        if self.outline_focus.is_some() {
+            if self.focus == Focus::Reader && self.outline_pane {
+                return self.outline_key(key);
+            }
+            self.outline_focus = None;
+            self.outline_filter = None;
         }
         match key.code {
             KeyCode::Char('Q') => return true,
@@ -930,6 +945,28 @@ impl<'t> App<'t> {
             f.render_widget(Paragraph::new(Line::from(format!(" {msg}")).yellow()), area);
             return;
         }
+        if self.outline_focus.is_some() {
+            let mut spans = vec![Span::raw(" ")];
+            let keys: &[(&str, &str)] = if let Some(filter) = &self.outline_filter {
+                spans.extend([" /".bold(), Span::raw(filter.clone()), "▏  ".slow_blink()]);
+                &[("↑↓", "move"), ("⏎", "read here"), ("esc", "clear")]
+            } else {
+                &[
+                    ("↑↓", "move"),
+                    ("/", "filter"),
+                    ("⏎", "read here"),
+                    ("esc", "back"),
+                    ("O", "close"),
+                    ("q", "quit"),
+                ]
+            };
+            for (k, what) in keys {
+                spans.push(k.bold());
+                spans.push(Span::raw(format!(" {what}  ")).dim());
+            }
+            f.render_widget(Paragraph::new(Line::from(spans)), area);
+            return;
+        }
         if self.typing {
             let line = Line::from(vec![
                 " /".bold(),
@@ -1078,7 +1115,10 @@ fn draw_help(f: &mut Frame) {
         ("← → h l", "Scroll long code lines sideways (0: back)"),
         ("] [", "Next / previous heading"),
         ("o", "Outline: jump to a heading"),
-        ("O", "Keep the outline beside the document"),
+        (
+            "O",
+            "Outline beside the document: ↑↓ move, / filter, ⏎ read there",
+        ),
         ("L", "Links: what this links to, and what links here"),
         ("s", "Search the text of every file"),
         ("e", "Edit the file in $EDITOR, at this point"),

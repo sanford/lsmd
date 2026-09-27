@@ -206,6 +206,15 @@ impl App<'_> {
         Some(Place { path, top })
     }
 
+    /// Remembers that the reader was at line `top` of the current
+    /// document, for Esc to come back to.
+    pub(super) fn remember(&mut self, top: usize) {
+        self.history.push(Place {
+            path: self.reading.clone(),
+            top,
+        });
+    }
+
     /// Where Esc goes from the reader, for the footer.
     pub(super) fn back_label(&self) -> String {
         match self.history.last() {
