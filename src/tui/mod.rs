@@ -10,6 +10,7 @@ use crate::index::{self, Index};
 use crate::theme::Theme;
 use crate::watch::Watch;
 use crate::wrap;
+use crate::{clipboard, editor};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -117,6 +118,8 @@ struct App<'t> {
     history: Vec<nav::Place>,
     /// A message for the footer, until the next key.
     flash: Option<String>,
+    /// A file to open in the editor, at a line, once the key's handled.
+    edit: Option<(PathBuf, usize)>,
     docs: HashMap<PathBuf, Doc>,
 }
 
@@ -154,6 +157,7 @@ impl<'t> App<'t> {
             prompt: None,
             history: Vec::new(),
             flash: None,
+            edit: None,
             docs: HashMap::new(),
         };
         match source {
@@ -202,6 +206,16 @@ impl<'t> App<'t> {
             };
             if key.kind == KeyEventKind::Press && self.key(key) {
                 return Ok(());
+            }
+            if let Some((path, line)) = self.edit.take() {
+                // Hand the terminal to the editor until it's done.
+                ratatui::restore();
+                let result = editor::edit(&path, line);
+                *terminal = ratatui::init();
+                terminal.clear()?;
+                if let Err(e) = result {
+                    self.flash = Some(format!("Couldn't edit: {e}"));
+                }
             }
         }
     }
@@ -379,6 +393,47 @@ impl<'t> App<'t> {
         self.list.select(Some(i.min(self.shown.len() - 1)));
     }
 
+    fn start_edit(&mut self) {
+        let Some(path) = self.current_path() else {
+            self.flash = Some("Standard input isn't a file to edit".into());
+            return;
+        };
+        let line = self.current().map_or(1, |d| d.source_line());
+        self.edit = Some((path, line));
+    }
+
+    fn copy_code(&mut self) {
+        let Some(block) = self.current().and_then(|d| d.code_on_screen()) else {
+            self.flash = Some("No code block on screen".into());
+            return;
+        };
+        let lines = block.code.lines().count();
+        let what = match block.lang.as_str() {
+            "" => format!("{lines} line{}", if lines == 1 { "" } else { "s" }),
+            lang => format!(
+                "{lines} line{} of {lang}",
+                if lines == 1 { "" } else { "s" }
+            ),
+        };
+        let code = block.code.clone();
+        self.flash = Some(match clipboard::copy(&code) {
+            Ok(how) => format!("Copied {what} {how}"),
+            Err(e) => format!("Couldn't copy: {e}"),
+        });
+    }
+
+    fn copy_path(&mut self) {
+        let Some(path) = self.current_path() else {
+            self.flash = Some("Standard input has no path".into());
+            return;
+        };
+        let path = path.display().to_string();
+        self.flash = Some(match clipboard::copy(&path) {
+            Ok(how) => format!("Copied {path} {how}"),
+            Err(e) => format!("Couldn't copy: {e}"),
+        });
+    }
+
     /// The side of the document that scrolls.
     fn side(&self) -> Side {
         if self.split && self.source_focus {
@@ -391,6 +446,9 @@ impl<'t> App<'t> {
     /// Keys that work the same in the list and the reader.
     fn view_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
         match key.code {
+            KeyCode::Char('e') if !ctrl => self.start_edit(),
+            KeyCode::Char('y') if !ctrl => self.copy_code(),
+            KeyCode::Char('Y') => self.copy_path(),
             KeyCode::Tab => self.split = !self.split,
             KeyCode::BackTab if self.split => self.source_focus = !self.source_focus,
             KeyCode::Char('w') if ctrl && self.split => self.source_focus = !self.source_focus,
@@ -877,6 +935,8 @@ fn draw_help(f: &mut Frame) {
         ("] [", "Next / previous heading"),
         ("o", "Outline: jump to a heading"),
         ("L", "Links: what this links to, and what links here"),
+        ("e", "Edit the file in $EDITOR, at this point"),
+        ("y Y", "Copy the code block on screen / the file's path"),
         ("/ n N", "Search; next / previous match"),
         ("f", "Follow a link (type the letters shown on it)"),
         ("space b", "Page down / up (the preview, in the list)"),

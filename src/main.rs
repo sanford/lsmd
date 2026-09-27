@@ -1,5 +1,7 @@
 mod ansi;
+mod clipboard;
 mod doc;
+mod editor;
 mod files;
 mod highlight;
 mod html;

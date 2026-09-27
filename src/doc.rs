@@ -8,7 +8,7 @@
 //! that renders as 10 lines, or a paragraph that wraps to 5, stays lined up.
 
 use crate::highlight;
-use crate::render::{Heading, RLine, render};
+use crate::render::{CodeBlock, Heading, RLine, render};
 use crate::theme::Theme;
 use crate::wrap;
 use ratatui::Frame;
@@ -85,6 +85,7 @@ pub struct Doc {
     pub base: Option<PathBuf>,
     headings: Vec<Heading>,
     links: Vec<String>,
+    code_blocks: Vec<CodeBlock>,
     search: Option<Search>,
     /// Link hints on screen, while choosing a link to follow.
     pub hints: Vec<Hint>,
@@ -125,6 +126,7 @@ impl Doc {
             base: std::env::current_dir().ok(),
             headings: Vec::new(),
             links: Vec::new(),
+            code_blocks: Vec::new(),
             search: None,
             hints: Vec::new(),
             pending_anchor: None,
@@ -194,6 +196,7 @@ impl Doc {
         self.lines = rendered.lines;
         self.headings = rendered.headings;
         self.links = rendered.links;
+        self.code_blocks = rendered.code_blocks;
         self.width = width;
         if let Some(query) = self.search.as_ref().map(|s| s.query.clone()) {
             self.find(&query);
@@ -486,6 +489,24 @@ impl Doc {
             })
             .collect();
         f.render_widget(Paragraph::new(visible), area);
+    }
+
+    /// The first code block on screen.
+    pub fn code_on_screen(&self) -> Option<&CodeBlock> {
+        let screen = self.top..self.top + self.height;
+        self.code_blocks
+            .iter()
+            .find(|b| b.lines.start < screen.end && screen.start < b.lines.end)
+    }
+
+    /// The source line (1-based) at the top of the screen, on whichever
+    /// side is leading.
+    pub fn source_line(&self) -> usize {
+        match self.lead {
+            Side::Source => self.source.get(self.source_top).map_or(1, |s| s.line),
+            Side::Rendered => self.rendered_pos(self.top) as usize,
+        }
+        .max(1)
     }
 
     /// Every link target in the document, in order, as written.

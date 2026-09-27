@@ -30,6 +30,15 @@ pub struct Rendered {
     pub headings: Vec<Heading>,
     /// Link targets, as written.
     pub links: Vec<String>,
+    pub code_blocks: Vec<CodeBlock>,
+}
+
+pub struct CodeBlock {
+    /// The rendered lines it covers.
+    pub lines: std::ops::Range<usize>,
+    pub lang: String,
+    /// The code, as written.
+    pub code: String,
 }
 
 pub struct Heading {
@@ -91,6 +100,7 @@ pub fn render(
         base,
         links: RefCell::new(Vec::new()),
         headings: Vec::new(),
+        code_blocks: Vec::new(),
         anchors: Anchorizer::new(),
     };
     for child in root.children() {
@@ -102,6 +112,7 @@ pub fn render(
         lines: r.out,
         headings: r.headings,
         links: r.links.into_inner(),
+        code_blocks: r.code_blocks,
     }
 }
 
@@ -128,6 +139,7 @@ struct Renderer<'t> {
     /// Link targets. A RefCell because inlines are collected through `&self`.
     links: RefCell<Vec<String>>,
     headings: Vec<Heading>,
+    code_blocks: Vec<CodeBlock>,
     anchors: Anchorizer,
 }
 
@@ -384,6 +396,17 @@ impl Renderer<'_> {
     }
 
     fn code_block(&mut self, info: &str, literal: &str) {
+        self.flush_gap();
+        let start = self.out.len();
+        self.code_block_lines(info, literal);
+        self.code_blocks.push(CodeBlock {
+            lines: start..self.out.len(),
+            lang: highlight::language(info).to_string(),
+            code: literal.to_string(),
+        });
+    }
+
+    fn code_block_lines(&mut self, info: &str, literal: &str) {
         let lang = highlight::language(info);
         let theme = self.theme;
         let base = theme.code_block();
