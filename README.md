@@ -4,9 +4,9 @@
 
 `lsmd` shows every Markdown file in your project on one screen, so you can browse and read them quickly. It knows which documents link to each other, in both directions, so you can jump to related documents instantly. It searches the document you're reading as you type, and every file in the project in a moment. It makes it easy to find your way around everything your team and your AI agents write.
 
-![lsmd browsing a project with 332 Markdown files: the file list on the left, the selected document rendered on the right](docs/images/browse.png)
+![lsmd running through 60 of a project's 333 Markdown files, each one rendered beside the list as it's selected](docs/images/browse.gif)
 
-That's what you see when you run `lsmd` in a project: every Markdown file, with how long ago it changed, and the selected one rendered beside the list. `↑` `↓` move through them, `Enter` opens one full screen.
+That's what you see when you run `lsmd` in a project: every Markdown file, with how long ago it changed, and the selected one rendered beside the list. Hold `↓` and each document renders as fast as your keyboard repeats, so you can skim a whole directory in seconds. `Enter` opens one full screen.
 
 ## Why
 
@@ -25,6 +25,8 @@ Documentation piles up. A project that's been worked on for a while, especially 
 ![Reading a document reached by following a link; the footer says "esc back to DESIGN.md"](docs/images/reader.png)
 
 **Find your place in a long document.** The header always shows which section you're in (`§ Install › On Windows`), and a scrollbar shows where you are; click or drag it to jump. `/` searches the document, `]` and `[` jump between headings, `o` opens the outline, where the text follows along as you move through the headings (`/` filters them), and `O` keeps the outline open beside the text, highlighting the section you're reading.
+
+![The outline: moving through the headings with the text following, filtering them to "state", then kept open beside the text while it follows along](docs/images/outline.gif)
 
 **Stays current.** Documents reload as they're edited, keeping your place, so `lsmd` works beside your editor, or beside an agent that's writing. `e` opens your editor at the line you're reading.
 
@@ -108,7 +110,7 @@ Reading:
 | `/` `n` `N` | Search this document; next and previous match |
 | `]` `[` | Next and previous heading |
 | `o` | Outline: `↑` `↓` `j` `k` go through the headings with the text following as you move, `/` filters them, `Enter` reads from there, `Esc` goes back to where you were |
-| `O` | The same outline, kept open beside the document and following along as you read. `O` again gives it the keyboard |
+| `O` | The same outline, kept open beside the document, highlighting the section you're reading. `Enter` gives the keyboard back to the text, `O` gives it to the outline again, and `O` from the outline closes it |
 | `f` | Follow a link: type the letters drawn on it |
 | `L` | Links: what this links to, and what links here (in this and the other popups: `↑` `↓` `j` `k` move, `/` filters, `Enter` goes) |
 | `Esc` `Backspace` | Back to where you were before following a link; then the list |

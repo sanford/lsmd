@@ -3,7 +3,7 @@
 
 use super::App;
 use super::picker::Target;
-use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -153,13 +153,12 @@ impl App<'_> {
                 }
                 _ => {}
             }
-            // Select the first match as the filter changes.
-            let first = self
-                .current()
-                .and_then(|d| visible(d.headings(), Some(&filter)).first().copied());
+            // Select the best match as the filter changes: the first one
+            // could be a heading that only matches loosely.
+            let best = self.current().and_then(|d| best(d.headings(), &filter));
             self.outline_filter = Some(filter);
-            if let Some(first) = first {
-                self.outline_select(first, from);
+            if let Some(best) = best {
+                self.outline_select(best, from);
             }
             return false;
         }
@@ -197,6 +196,11 @@ impl App<'_> {
         sel: usize,
         from: usize,
     ) -> bool {
+        // Read from here, even when the filter matches nothing.
+        if matches!(code, KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right) {
+            self.leave_outline();
+            return false;
+        }
         let filter = self.outline_filter.clone();
         let Some(doc) = self.current() else {
             return false;
@@ -208,11 +212,6 @@ impl App<'_> {
         let at = shown.iter().position(|&i| i == sel).unwrap_or(0);
         let last = shown.len() - 1;
         let to = match code {
-            // Read from here.
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                self.leave_outline();
-                return false;
-            }
             KeyCode::Down if shift => at.saturating_add(page),
             KeyCode::Up if shift => at.saturating_sub(page),
             KeyCode::Char('J') | KeyCode::PageDown => at.saturating_add(page),
@@ -238,19 +237,76 @@ impl App<'_> {
     }
 }
 
-/// The headings (as indices) that match `filter`, fuzzily; all of them
-/// without one.
+/// The headings (as indices) that match `filter`; all of them without one.
 fn visible(headings: &[crate::render::Heading], filter: Option<&str>) -> Vec<usize> {
     let Some(filter) = filter.filter(|f| !f.is_empty()) else {
         return (0..headings.len()).collect();
     };
-    let pattern = Pattern::parse(filter, CaseMatching::Smart, Normalization::Smart);
+    scores(headings, filter).map(|(i, _)| i).collect()
+}
+
+/// The heading that matches `filter` best; the earliest of equals.
+fn best(headings: &[crate::render::Heading], filter: &str) -> Option<usize> {
+    if filter.is_empty() {
+        return None;
+    }
+    scores(headings, filter)
+        .max_by_key(|&(i, score)| (score, std::cmp::Reverse(i)))
+        .map(|(i, _)| i)
+}
+
+/// Each heading that matches `filter`, with how well.
+fn scores<'h>(
+    headings: &'h [crate::render::Heading],
+    filter: &str,
+) -> impl Iterator<Item = (usize, u32)> + 'h {
+    // Each word as typed, in any order, rather than fuzzily: a heading's
+    // few words make fuzzy matches mostly noise.
+    let pattern = Pattern::new(
+        filter,
+        CaseMatching::Smart,
+        Normalization::Smart,
+        AtomKind::Substring,
+    );
     let mut matcher = Matcher::new(Config::DEFAULT);
     let mut buf = Vec::new();
-    (0..headings.len())
-        .filter(|&i| {
-            let text = Utf32Str::new(&headings[i].text, &mut buf);
-            pattern.score(text, &mut matcher).is_some()
-        })
-        .collect()
+    headings.iter().enumerate().filter_map(move |(i, h)| {
+        let text = Utf32Str::new(&h.text, &mut buf);
+        pattern.score(text, &mut matcher).map(|s| (i, s))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::Heading;
+
+    fn headings(texts: &[&str]) -> Vec<Heading> {
+        texts
+            .iter()
+            .enumerate()
+            .map(|(line, t)| Heading {
+                line,
+                level: 2,
+                text: t.to_string(),
+                slug: String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn filtering_picks_the_best_match_not_the_first() {
+        let h = headings(&[
+            "Lanternworks Technical Architecture",
+            "Threading",
+            "Document State Machine",
+            "State Diagram",
+        ]);
+        assert_eq!(visible(&h, Some("state")), vec![2, 3]);
+        assert_eq!(best(&h, "sta"), Some(2));
+        assert_eq!(best(&h, "diag"), Some(3));
+        assert_eq!(best(&h, "diagram state"), Some(3));
+        assert_eq!(best(&h, "zzz"), None);
+        assert_eq!(visible(&h, Some("")).len(), 4);
+    }
 }

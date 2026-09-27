@@ -817,7 +817,9 @@ impl<'t> App<'t> {
                 .unwrap_or_default(),
             Focus::List => Vec::new(),
         };
-        let room = usize::from(title_area.width).saturating_sub(wrap::width(&summary) + 12);
+        // " lsmd " and the "  § " before the trail, and a gap before the note.
+        let gap = if note_w > 0 { 2 } else { 0 };
+        let room = usize::from(title_area.width).saturating_sub(wrap::width(&summary) + 11 + gap);
         if let Some(trail) = section_trail(&section, room) {
             title.push(Span::raw("  § ").dim());
             title.push(Span::raw(trail));
@@ -1194,11 +1196,25 @@ fn section_trail(section: &[String], room: usize) -> Option<String> {
         if skip > 0 {
             trail.insert_str(0, "… › ");
         }
-        if wrap::width(&trail) <= room || skip + 1 == section.len() {
+        if wrap::width(&trail) <= room {
             return Some(trail);
         }
     }
-    None
+    // Even the innermost section alone is too long: cut it short, unless
+    // there's too little room for that to say anything.
+    let last = section.last()?;
+    if room < 8 {
+        return None;
+    }
+    let mut trail = String::from("… › ");
+    for c in last.chars() {
+        if wrap::width(&trail) + wrap::width(c.encode_utf8(&mut [0; 4])) + 1 > room {
+            break;
+        }
+        trail.push(c);
+    }
+    trail.push('…');
+    Some(trail)
 }
 
 /// `path` with the home directory shown as `~`.
@@ -1267,7 +1283,9 @@ mod tests {
             "Guide › Install › On Windows"
         );
         assert_eq!(section_trail(&s, 25).unwrap(), "… › Install › On Windows");
-        assert_eq!(section_trail(&s, 5).unwrap(), "… › On Windows");
+        assert_eq!(section_trail(&s, 15).unwrap(), "… › On Windows");
+        assert_eq!(section_trail(&s, 10).unwrap(), "… › On Wi…");
+        assert_eq!(section_trail(&s, 5), None);
         assert_eq!(section_trail(&[], 80), None);
     }
 
