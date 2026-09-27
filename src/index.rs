@@ -109,6 +109,15 @@ impl Index {
         if std::fs::create_dir_all(dir).is_ok() && std::fs::write(&tmp, json).is_ok() {
             let _ = std::fs::rename(&tmp, path);
         }
+        // The index holds the titles and links of every document browsed,
+        // so keep ~/.lsmd to its owner.
+        #[cfg(unix)]
+        if let Some(lsmd) = dir.parent() {
+            use std::os::unix::fs::PermissionsExt;
+            for d in [lsmd, dir] {
+                let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700));
+            }
+        }
     }
 }
 
@@ -166,9 +175,13 @@ fn read(path: &Path, rel: &str, old: Option<FileLinks>) -> (FileLinks, bool) {
     {
         return (f, false);
     }
-    let md = std::fs::read(path)
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .unwrap_or_default();
+    let md = if size <= files::BACKGROUND_LIMIT {
+        std::fs::read(path)
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     let (title, links) = extract(&md, rel);
     (
         FileLinks {

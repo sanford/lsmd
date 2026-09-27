@@ -24,6 +24,11 @@ pub fn search(files: Vec<(PathBuf, String)>, query: String) -> Receiver<Vec<Hit>
     thread::spawn(move || {
         let mut hits = Vec::new();
         'files: for (path, rel) in files {
+            let too_big =
+                std::fs::metadata(&path).map_or(true, |m| m.len() > crate::files::BACKGROUND_LIMIT);
+            if too_big {
+                continue;
+            }
             let Ok(bytes) = std::fs::read(&path) else {
                 continue;
             };

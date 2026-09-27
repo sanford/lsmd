@@ -57,6 +57,9 @@ impl RLine {
     }
 }
 
+/// How deeply blocks may nest before the rest is shown as plain text.
+const MAX_DEPTH: usize = 64;
+
 /// GitHub-flavored Markdown, plus the extensions GitHub renders.
 pub(crate) fn options() -> Options<'static> {
     let mut options = Options::default();
@@ -96,9 +99,11 @@ pub fn render(
         gap: false,
         src: None,
         list_depth: 0,
+        depth: 0,
         footnotes: false,
         base,
         links: RefCell::new(Vec::new()),
+        inline_depth: std::cell::Cell::new(0),
         headings: Vec::new(),
         code_blocks: Vec::new(),
         anchors: Anchorizer::new(),
@@ -134,8 +139,12 @@ struct Renderer<'t> {
     gap: bool,
     src: Option<(usize, usize)>,
     list_depth: usize,
+    /// How many blocks the current one is nested in.
+    depth: usize,
     footnotes: bool,
     base: Option<&'t Path>,
+    /// Nesting of the inline being collected. A Cell for the same reason.
+    inline_depth: std::cell::Cell<usize>,
     /// Link targets. A RefCell because inlines are collected through `&self`.
     links: RefCell<Vec<String>>,
     headings: Vec<Heading>,
@@ -195,7 +204,14 @@ impl Renderer<'_> {
             });
             p.used = true;
         }
-        line.extend(spans);
+        // Every rendered line comes through here: the one place to make
+        // sure nothing in a document can act on the terminal.
+        line.extend(spans.into_iter().map(|mut span| {
+            if let std::borrow::Cow::Owned(text) = crate::safe::printable(&span.content) {
+                span.content = text.into();
+            }
+            span
+        }));
         self.out.push(RLine {
             spans: line,
             src: self.src,
@@ -249,6 +265,20 @@ impl Renderer<'_> {
     /// Renders a block. `tight` is set inside tight lists, where paragraphs
     /// aren't separated by blank lines.
     fn block(&mut self, node: Node<'_>, tight: bool) {
+        // Hostile files can nest quotes or lists thousands deep, which would
+        // overflow the stack. Nothing real comes near this, so past it,
+        // show the text.
+        if self.depth >= MAX_DEPTH {
+            let text = plain_text(node);
+            self.para(&[Piece::Text(text, self.theme.dim())]);
+            return;
+        }
+        self.depth += 1;
+        self.block_inner(node, tight);
+        self.depth -= 1;
+    }
+
+    fn block_inner(&mut self, node: Node<'_>, tight: bool) {
         let ast = node.data();
         match &ast.value {
             NodeValue::FrontMatter(text) => self.front_matter(text),
@@ -612,6 +642,17 @@ impl Renderer<'_> {
     }
 
     fn inline(&self, node: Node<'_>, style: Style, out: &mut Vec<Piece>) {
+        // As for blocks: deep enough nesting could overflow the stack.
+        if self.inline_depth.get() >= MAX_DEPTH {
+            out.push(Piece::Text(plain_text(node), style));
+            return;
+        }
+        self.inline_depth.set(self.inline_depth.get() + 1);
+        self.inline_inner(node, style, out);
+        self.inline_depth.set(self.inline_depth.get() - 1);
+    }
+
+    fn inline_inner(&self, node: Node<'_>, style: Style, out: &mut Vec<Piece>) {
         let theme = self.theme;
         let styled = |m| theme.modifier(style, m);
         let ast = node.data();
@@ -916,6 +957,30 @@ mod tests {
         assert_eq!(local_path("https://x.io/a.md"), None);
         assert_eq!(local_path("mailto:me@x.io"), None);
         assert_eq!(local_path("C:/x.md").as_deref(), Some("C:/x.md"));
+    }
+
+    #[test]
+    fn neutralizes_escape_sequences() {
+        let md = "Title \u{1b}]0;x\u{7} and &#27;]52;c;eA==&#7; and `\u{1b}[2J`\n\n[l](https://x/\u{1b}) ![\u{1b}](i.png)\n";
+        let text = plain(md, 80);
+        assert!(
+            text.lines().all(|l| !l.chars().any(crate::safe::is_unsafe)),
+            "{text:?}"
+        );
+        assert!(text.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn survives_deep_nesting() {
+        // Wide enough for 64 levels of quote bars, so the text fits.
+        let quotes = format!("{} deep\n", ">".repeat(10_000));
+        assert!(plain(&quotes, 300).contains("deep"));
+        let lists: String = (0..2000)
+            .map(|i| format!("{}- x\n", "  ".repeat(i)))
+            .collect();
+        plain(&lists, 80);
+        let links = format!("{}x{}", "[".repeat(5000), "](u)".repeat(5000));
+        plain(&links, 80);
     }
 
     #[test]

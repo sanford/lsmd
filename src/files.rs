@@ -8,6 +8,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 pub const EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd", "mdx"];
 
+/// Files bigger than this aren't read in the background (for the link
+/// index or searching every file): a real document is far smaller, and a
+/// huge file in a repo shouldn't eat memory unasked. They still open.
+pub const BACKGROUND_LIMIT: u64 = 16 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub path: PathBuf,

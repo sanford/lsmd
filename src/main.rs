@@ -8,7 +8,9 @@ mod grep;
 mod highlight;
 mod html;
 mod index;
+mod open;
 mod render;
+mod safe;
 mod theme;
 mod tui;
 mod watch;
@@ -176,7 +178,7 @@ fn list_files(root: &Path, all: bool) -> io::Result<()> {
     entries.sort_by(files::by_path);
     let mut out = io::stdout().lock();
     for e in entries {
-        writeln!(out, "{}", e.rel)?;
+        writeln!(out, "{}", safe::printable(&e.rel))?;
     }
     out.flush()
 }

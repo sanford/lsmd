@@ -61,6 +61,15 @@ pub fn run(source: Source, theme: &Theme, settings: Settings) -> io::Result<()> 
     app.mouse_on = settings.mouse;
     app.by_time = settings.by_date;
     set_mouse(app.mouse_on, true);
+    if app.mouse_on {
+        // ratatui's panic hook restores the terminal, but doesn't know
+        // about the mouse: turn it off first, or the shell gets mouse codes.
+        let restore = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            set_mouse(true, false);
+            restore(info);
+        }));
+    }
     let result = app.run(&mut terminal);
     set_mouse(app.mouse_on, false);
     ratatui::restore();

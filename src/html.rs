@@ -56,9 +56,10 @@ pub fn block(html: &str, theme: &Theme) -> Vec<Piece> {
             rest = after.find("-->").map_or("", |i| &after[i + 3..]);
             continue;
         }
-        if rest.starts_with('<')
-            && let Some(end) = rest.find('>')
-        {
+        // A tag starts with `<` and a letter, `/` or `!`; "2 < 3" is text.
+        let tag_start = rest.starts_with('<')
+            && rest[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '/' || c == '!');
+        if tag_start && let Some(end) = rest.find('>') {
             let tag = &rest[1..end];
             rest = &rest[end + 1..];
             let closing = tag.starts_with('/');
@@ -77,7 +78,10 @@ pub fn block(html: &str, theme: &Theme) -> Vec<Piece> {
             }
             continue;
         }
-        let end = rest[1..].find(['<']).map_or(rest.len(), |i| i + 1);
+        // Text runs to the next tag. (Skip the first character, which may
+        // be a `<` that didn't start one, and may be more than one byte.)
+        let first = rest.chars().next().map_or(1, char::len_utf8);
+        let end = rest[first..].find('<').map_or(rest.len(), |i| i + first);
         let text = &rest[..end];
         rest = &rest[end..];
         if stack.iter().any(|t| HIDDEN.contains(&t.as_str())) {
@@ -341,6 +345,12 @@ mod tests {
             "More\nHidden"
         );
         assert_eq!(text("<script>alert(1)</script>ok"), "ok");
+    }
+
+    #[test]
+    fn handles_text_starting_with_wide_characters() {
+        assert_eq!(text("<div>é is first</div>"), "é is first");
+        assert_eq!(text("<p>日本語</p><p>2 < 3</p>"), "日本語\n2 < 3");
     }
 
     #[test]

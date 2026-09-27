@@ -7,11 +7,14 @@ use std::io::{self, Write};
 pub fn print(lines: &[RLine], out: &mut impl Write) -> io::Result<()> {
     for line in lines {
         for span in &line.spans {
+            // Rendering already made text printable; this is the last line
+            // of defense before the terminal.
+            let text = crate::safe::printable(&span.content);
             let sgr = sgr(span.style);
             if sgr.is_empty() {
-                out.write_all(span.content.as_bytes())?;
+                out.write_all(text.as_bytes())?;
             } else {
-                write!(out, "\x1b[{sgr}m{}\x1b[0m", span.content)?;
+                write!(out, "\x1b[{sgr}m{text}\x1b[0m")?;
             }
         }
         out.write_all(b"\n")?;

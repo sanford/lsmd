@@ -20,7 +20,7 @@ pub enum Prompt {
     /// The outline or the links panel.
     Pick(Picker),
     /// Confirming opening something outside lsmd.
-    Open { target: String },
+    Open(crate::open::Target),
     /// Typing a search of every file's text.
     Grep { query: String },
 }
@@ -162,11 +162,11 @@ impl App<'_> {
                 }
                 _ => self.prompt = Some(Prompt::Grep { query }),
             },
-            Prompt::Open { target } => {
+            Prompt::Open(target) => {
                 if matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter) {
-                    self.flash = Some(match open_externally(&target) {
-                        Ok(()) => format!("Opened {target}"),
-                        Err(e) => format!("Couldn't open {target}: {e}"),
+                    self.flash = Some(match crate::open::open(&target) {
+                        Ok(()) => format!("Opened {}", target.what),
+                        Err(e) => format!("Couldn't open {}: {e}", target.what),
                     });
                 }
             }
@@ -240,9 +240,10 @@ impl App<'_> {
         let here = self.here();
         let Some(doc) = self.current() else { return };
         let Some(path) = render::local_path(url) else {
-            self.prompt = Some(Prompt::Open {
-                target: url.to_string(),
-            });
+            match crate::open::web(url) {
+                Ok(target) => self.prompt = Some(Prompt::Open(target)),
+                Err(why) => self.flash = Some(why),
+            }
             return;
         };
         let anchor = url.split_once('#').map(|(_, a)| a.to_string());
@@ -265,9 +266,10 @@ impl App<'_> {
             return;
         }
         if !target.is_file() || !files::is_markdown(&target) {
-            self.prompt = Some(Prompt::Open {
-                target: target.display().to_string(),
-            });
+            match crate::open::file(&target) {
+                Ok(target) => self.prompt = Some(Prompt::Open(target)),
+                Err(why) => self.flash = Some(why),
+            }
             return;
         }
         self.open_path(target, anchor);
@@ -358,11 +360,12 @@ impl App<'_> {
                 "▏".slow_blink(),
                 "  ⏎ search  esc cancel".dim(),
             ]),
-            Prompt::Open { target } => Line::from(vec![
+            Prompt::Open(target) => Line::from(vec![
                 " Open ".bold(),
-                Span::raw(target.clone()),
+                Span::raw(target.what.clone()),
                 "? ".bold(),
-                "y/n".dim(),
+                "y/n  ".dim(),
+                Span::raw(target.target.clone()).dim(),
             ]),
         };
         Some(line)
@@ -386,26 +389,6 @@ fn hint_labels(n: usize) -> Vec<String> {
             label.iter().rev().collect()
         })
         .collect()
-}
-
-/// Opens a URL or file with the system's default app.
-fn open_externally(target: &str) -> std::io::Result<()> {
-    use std::process::{Command, Stdio};
-    let mut cmd = if cfg!(target_os = "macos") {
-        Command::new("open")
-    } else if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.args(["/C", "start", ""]);
-        c
-    } else {
-        Command::new("xdg-open")
-    };
-    cmd.arg(target)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(drop)
 }
 
 #[cfg(test)]
