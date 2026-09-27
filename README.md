@@ -1,6 +1,6 @@
 # lsmd
 
-**A Markdown reader built for speed and easy navigation in large projects.**
+**A terminal-friendly Markdown (.md) reader built for speed and easy navigation in large projects.**
 
 `lsmd` shows every Markdown file in your project on one screen, so you can browse and read them quickly. It knows which documents link to each other, in both directions, so you can jump to related documents instantly. It searches the document you're reading as you type, and every file in the project in a moment. It makes it easy to find your way around everything your team and your AI agents write.
 

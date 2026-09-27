@@ -2,7 +2,7 @@
 name = "lsmd"
 version = "0.1.0"
 edition = "2024"
-description = "A Markdown reader built for speed and easy navigation in large projects"
+description = "A terminal-friendly Markdown (.md) reader built for speed and easy navigation in large projects"
 repository = "https://github.com/sanford/lsmd"
 license = "GPL-3.0-or-later"
 readme = "README.md"
