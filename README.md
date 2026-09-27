@@ -90,7 +90,7 @@ In the file list:
 
 | Key | |
 |---|---|
-| `↑` `↓` `j` `k` | Move |
+| `↑` `↓` `j` `k` | Move; with `Shift` (`⇧↑` `⇧↓` `K` `J`), a page at a time |
 | `Enter` `→` `l` | Read the selected file |
 | `/` | Filter the list by name (fuzzy) |
 | `s` | Search the text of every file in the list |
@@ -102,7 +102,8 @@ Reading:
 
 | Key | |
 |---|---|
-| `↑` `↓` `j` `k`, `Space` `b`, `d` `u`, `g` `G` | Scroll by line, page, half page; top, bottom |
+| `↑` `↓` `j` `k` | Scroll a line; with `Shift` (`⇧↑` `⇧↓` `K` `J`), a page |
+| `Space` `b`, `d` `u`, `g` `G` | Page, half page; top, bottom |
 | `←` `→` `h` `l` | Scroll long code lines sideways (`0` back to the start) |
 | `/` `n` `N` | Search this document; next and previous match |
 | `]` `[` | Next and previous heading |

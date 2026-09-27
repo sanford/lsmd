@@ -609,6 +609,10 @@ impl<'t> App<'t> {
             KeyCode::Char('q') => return true,
             KeyCode::Char('d') if ctrl => self.select_by(page / 2),
             KeyCode::Char('u') if ctrl => self.select_by(-page / 2),
+            KeyCode::Char('J') => self.select_by(page),
+            KeyCode::Char('K') => self.select_by(-page),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => self.select_by(page),
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => self.select_by(-page),
             KeyCode::Char('j') | KeyCode::Down => self.select_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.select_by(-1),
             KeyCode::PageDown => self.select_by(page),
@@ -675,7 +679,13 @@ impl<'t> App<'t> {
         };
         let page = doc.page();
         let half = (page / 2).max(1);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
+            // Shift turns a line into a page.
+            KeyCode::Char('J') => doc.scroll_by(page, side),
+            KeyCode::Char('K') => doc.scroll_by(-page, side),
+            KeyCode::Down if shift => doc.scroll_by(page, side),
+            KeyCode::Up if shift => doc.scroll_by(-page, side),
             KeyCode::Char('d') if ctrl => doc.scroll_by(half, side),
             KeyCode::Char('u') if ctrl => doc.scroll_by(-half, side),
             KeyCode::Char('f') if ctrl => doc.scroll_by(page, side),
@@ -1037,6 +1047,7 @@ fn draw_help(f: &mut Frame) {
         ("y Y", "Copy the code block on screen / the file's path"),
         ("/ n N", "Search; next / previous match"),
         ("f", "Follow a link (type the letters shown on it)"),
+        ("⇧↓ ⇧↑ J K", "Page down / up"),
         ("space b", "Page down / up (the preview, in the list)"),
         ("d u", "Half page down / up"),
         ("g G", "Top / bottom"),
