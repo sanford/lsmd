@@ -1,5 +1,6 @@
 mod ansi;
 mod clipboard;
+mod config;
 mod doc;
 mod editor;
 mod files;
@@ -25,6 +26,9 @@ use theme::{Mode, Theme};
 /// With no arguments, lists the Markdown files under the current directory,
 /// with a preview of each. With a file, opens it in the reader. When output
 /// isn't a terminal, prints the rendered file, or the list of files.
+///
+/// Defaults for the options can go in ~/.lsmd/config.toml, e.g. `theme =
+/// "dark"`, `width = 100`, `source-side = "left"`, `mouse = false`.
 #[derive(Parser)]
 #[command(version)]
 struct Args {
@@ -44,16 +48,20 @@ struct Args {
     source: bool,
 
     /// Which side of the split view the source goes on
-    #[arg(long, value_enum, value_name = "SIDE", default_value_t = SourceSide::Right)]
-    source_side: SourceSide,
+    #[arg(long, value_enum, value_name = "SIDE")]
+    source_side: Option<SourceSide>,
+
+    /// Don't use the mouse, so the terminal's own text selection works
+    #[arg(long)]
+    no_mouse: bool,
 
     /// Print without colors or styles
     #[arg(short, long)]
     plain: bool,
 
     /// Color theme
-    #[arg(long, value_enum, default_value_t = Mode::Auto)]
-    theme: Mode,
+    #[arg(long, value_enum)]
+    theme: Option<Mode>,
 }
 
 fn main() -> ExitCode {
@@ -71,15 +79,24 @@ fn main() -> ExitCode {
 fn run(args: Args) -> io::Result<()> {
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let interactive = io::stdout().is_terminal() && !args.plain;
-    let theme = Theme::new(args.theme, !args.plain && !no_color);
-    let width = args.width.filter(|&w| w > 0);
+    // Flags win over the config file.
+    let config = config::load();
+    let mode = args.theme.or(config.theme).unwrap_or(Mode::Auto);
+    let theme = Theme::new(mode, !args.plain && !no_color);
+    let width = args.width.or(config.width).filter(|&w| w > 0);
+    let all = args.all || config.all.unwrap_or(false);
 
-    let source = source(args.path.as_deref(), args.all)?;
+    let source = source(args.path.as_deref(), all)?;
     if interactive {
         let settings = tui::Settings {
             max_width: width,
-            split: args.source,
-            source_side: args.source_side,
+            split: args.source || config.source.unwrap_or(false),
+            source_side: args
+                .source_side
+                .or(config.source_side)
+                .unwrap_or(SourceSide::Right),
+            mouse: !args.no_mouse && config.mouse.unwrap_or(true),
+            by_date: config.sort == Some(config::Sort::Date),
         };
         return tui::run(source, &theme, settings);
     }

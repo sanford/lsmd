@@ -7,7 +7,8 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Mode {
     Auto,
     Dark,

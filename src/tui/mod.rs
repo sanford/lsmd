@@ -1,6 +1,7 @@
 //! The interactive browser and reader.
 
 mod links;
+mod mouse;
 mod nav;
 mod picker;
 mod search_all;
@@ -45,6 +46,11 @@ pub struct Settings {
     /// Open documents with their source alongside.
     pub split: bool,
     pub source_side: SourceSide,
+    /// Scroll and click with the mouse. (Selecting text then needs a
+    /// modifier key in most terminals.)
+    pub mouse: bool,
+    /// Sort the list newest first.
+    pub by_date: bool,
 }
 
 pub fn run(source: Source, theme: &Theme, settings: Settings) -> io::Result<()> {
@@ -52,9 +58,26 @@ pub fn run(source: Source, theme: &Theme, settings: Settings) -> io::Result<()> 
     app.split = settings.split;
     app.source_right = settings.source_side == SourceSide::Right;
     let mut terminal = ratatui::init();
+    app.mouse_on = settings.mouse;
+    app.by_time = settings.by_date;
+    set_mouse(app.mouse_on, true);
     let result = app.run(&mut terminal);
+    set_mouse(app.mouse_on, false);
     ratatui::restore();
     result
+}
+
+/// Turns mouse reporting on or off, if lsmd uses the mouse.
+fn set_mouse(used: bool, on: bool) {
+    use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+    use ratatui::crossterm::execute;
+    if used {
+        let _ = if on {
+            execute!(io::stdout(), EnableMouseCapture)
+        } else {
+            execute!(io::stdout(), DisableMouseCapture)
+        };
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -95,6 +118,8 @@ struct App<'t> {
     shown: Vec<Shown>,
     list: ListState,
     list_height: usize,
+    /// Where the list's rows were drawn (empty when it isn't shown).
+    list_area: Rect,
     /// The user has moved the selection since the list last changed order.
     moved: bool,
     /// A file to select as soon as the scan finds it.
@@ -121,6 +146,8 @@ struct App<'t> {
     flash: Option<String>,
     /// A file to open in the editor, at a line, once the key's handled.
     edit: Option<(PathBuf, usize)>,
+    /// The mouse is in use.
+    mouse_on: bool,
     /// A search of every file under way, and its query.
     grep: Option<(Receiver<Vec<crate::grep::Hit>>, String)>,
     docs: HashMap<PathBuf, Doc>,
@@ -147,6 +174,7 @@ impl<'t> App<'t> {
             shown: Vec::new(),
             list: ListState::default(),
             list_height: 0,
+            list_area: Rect::default(),
             moved: false,
             want: None,
             focus: Focus::List,
@@ -162,6 +190,7 @@ impl<'t> App<'t> {
             flash: None,
             edit: None,
             grep: None,
+            mouse_on: false,
             docs: HashMap::new(),
         };
         match source {
@@ -205,17 +234,25 @@ impl<'t> App<'t> {
             if !event::poll(wait)? {
                 continue;
             }
-            let Event::Key(key) = event::read()? else {
-                continue; // Resizes redraw at the top of the loop.
+            let key = match event::read()? {
+                Event::Key(key) => key,
+                Event::Mouse(m) => {
+                    self.flash = None;
+                    self.mouse(m);
+                    continue;
+                }
+                _ => continue, // Resizes redraw at the top of the loop.
             };
             if key.kind == KeyEventKind::Press && self.key(key) {
                 return Ok(());
             }
             if let Some((path, line)) = self.edit.take() {
                 // Hand the terminal to the editor until it's done.
+                set_mouse(self.mouse_on, false);
                 ratatui::restore();
                 let result = editor::edit(&path, line);
                 *terminal = ratatui::init();
+                set_mouse(self.mouse_on, true);
                 terminal.clear()?;
                 if let Err(e) = result {
                     self.flash = Some(format!("Couldn't edit: {e}"));
@@ -631,6 +668,7 @@ impl<'t> App<'t> {
         ])
         .areas(f.area());
 
+        self.list_area = Rect::default();
         let reader_only =
             self.text.is_some() || (self.focus == Focus::Reader && !self.list_in_reader);
         let narrow = body.width < 80;
@@ -723,6 +761,7 @@ impl<'t> App<'t> {
         let block = self.pane(title, self.focus == Focus::List);
         let inner = block.inner(area);
         self.list_height = inner.height.into();
+        self.list_area = inner;
         let now = SystemTime::now();
         let width = usize::from(inner.width);
         let items: Vec<ListItem> = self

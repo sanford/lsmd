@@ -37,7 +37,8 @@ pub struct Split {
 }
 
 /// Which side of the split the source goes on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SourceSide {
     Left,
     Right,
@@ -120,6 +121,10 @@ pub struct Doc {
     lead: Side,
     /// Visible lines at the last draw.
     height: usize,
+    /// Where each side was drawn last, for the mouse. The source's is
+    /// empty when it isn't shown.
+    rendered_area: Rect,
+    source_area: Rect,
 }
 
 impl Doc {
@@ -147,6 +152,8 @@ impl Doc {
             source_top: 0,
             lead: Side::Rendered,
             height: 0,
+            rendered_area: Rect::default(),
+            source_area: Rect::default(),
         }
     }
 
@@ -335,6 +342,7 @@ impl Doc {
         self.height = area.height.into();
         self.sync(false);
         self.lead = Side::Rendered;
+        self.source_area = Rect::default();
         self.draw_rendered(f, area);
     }
 
@@ -374,13 +382,15 @@ impl Doc {
         self.height = area.height.into();
         self.sync(true);
 
+        self.source_area = source_area;
         self.draw_source(f, source_area, split.focus == Side::Source, theme);
         let bar = vec![Line::from("│".dim()); area.height.into()];
         f.render_widget(Paragraph::new(bar), bar_area);
         self.draw_rendered(f, rendered_area);
     }
 
-    fn draw_rendered(&self, f: &mut Frame, area: Rect) {
+    fn draw_rendered(&mut self, f: &mut Frame, area: Rect) {
+        self.rendered_area = area;
         let width = usize::from(area.width);
         let visible: Vec<Line> = self.lines[self.top..]
             .iter()
@@ -496,6 +506,30 @@ impl Doc {
             })
             .collect();
         f.render_widget(Paragraph::new(visible), area);
+    }
+
+    /// The side of the document at screen position (x, y), if any.
+    pub fn side_at(&self, x: u16, y: u16) -> Option<Side> {
+        let pos = ratatui::layout::Position { x, y };
+        if self.rendered_area.contains(pos) {
+            Some(Side::Rendered)
+        } else if self.source_area.contains(pos) {
+            Some(Side::Source)
+        } else {
+            None
+        }
+    }
+
+    /// The target of the link at screen position (x, y), if there's one.
+    pub fn link_at(&self, x: u16, y: u16) -> Option<String> {
+        if self.side_at(x, y) != Some(Side::Rendered) {
+            return None;
+        }
+        let area = self.rendered_area;
+        let line = self.lines.get(self.top + usize::from(y - area.y))?;
+        let col = usize::from(x - area.x);
+        let link = line.links.iter().find(|l| l.start <= col && col < l.end)?;
+        self.links.get(link.id as usize).cloned()
     }
 
     /// The first code block on screen.
