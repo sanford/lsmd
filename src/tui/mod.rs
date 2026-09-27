@@ -157,6 +157,8 @@ struct App<'t> {
     outline_focus: Option<(usize, usize)>,
     /// Text typed after `/` in the outline, narrowing its headings.
     outline_filter: Option<String>,
+    /// `o` opened the pane just while it has the keyboard.
+    outline_temporary: bool,
     help: bool,
     /// Show the source beside the rendered document.
     split: bool,
@@ -214,6 +216,7 @@ impl<'t> App<'t> {
             outline_list: ListState::default(),
             outline_focus: None,
             outline_filter: None,
+            outline_temporary: false,
             help: false,
             split: false,
             source_focus: false,
@@ -546,7 +549,7 @@ impl<'t> App<'t> {
             KeyCode::Char('e') if !ctrl => self.start_edit(),
             KeyCode::Char('y') if !ctrl => self.copy_code(),
             KeyCode::Char('Y') => self.copy_path(),
-            KeyCode::Char('O') if self.focus == Focus::Reader => self.focus_outline(),
+            KeyCode::Char('O') if self.focus == Focus::Reader => self.focus_outline(false),
             KeyCode::Char('O') => self.outline_pane = !self.outline_pane,
             KeyCode::Char('s') if !ctrl => {
                 self.prompt = Some(nav::Prompt::Grep {
@@ -593,8 +596,7 @@ impl<'t> App<'t> {
             if self.focus == Focus::Reader && self.outline_pane {
                 return self.outline_key(key);
             }
-            self.outline_focus = None;
-            self.outline_filter = None;
+            self.leave_outline();
         }
         match key.code {
             KeyCode::Char('Q') => return true,
@@ -1113,7 +1115,10 @@ fn draw_help(f: &mut Frame) {
         ("q", "Quit"),
         ("← → h l", "Scroll long code lines sideways (0: back)"),
         ("] [", "Next / previous heading"),
-        ("o", "Outline: jump to a heading"),
+        (
+            "o",
+            "Outline: ↑↓ through the headings (the text follows), ⏎ read there",
+        ),
         (
             "O",
             "Outline beside the document: ↑↓ move, / filter, ⏎ read there",

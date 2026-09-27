@@ -86,18 +86,31 @@ impl App<'_> {
         true
     }
 
-    /// Opens the outline pane if it's closed, and gives it the keyboard,
-    /// starting at the section on screen.
-    pub(super) fn focus_outline(&mut self) {
-        self.outline_pane = true;
+    /// Gives the outline pane the keyboard, starting at the section on
+    /// screen. `O` opens it to stay; `o` (`just_for_now`) only while it has
+    /// the keyboard, unless it was already open.
+    pub(super) fn focus_outline(&mut self, just_for_now: bool) {
         let Some(doc) = self.current() else { return };
         if doc.headings().is_empty() {
             self.flash = Some("No headings".into());
             return;
         }
         let at = (doc.current_heading().unwrap_or(0), doc.top());
+        self.outline_temporary = just_for_now && !self.outline_pane;
+        self.outline_pane = true;
         self.outline_focus = Some(at);
         self.outline_filter = None;
+    }
+
+    /// Hands the keyboard back to the document, closing the pane if `o`
+    /// opened it.
+    pub(super) fn leave_outline(&mut self) {
+        self.outline_focus = None;
+        self.outline_filter = None;
+        if self.outline_temporary {
+            self.outline_temporary = false;
+            self.outline_pane = false;
+        }
     }
 
     /// Keys while the outline has the keyboard. Returns true to quit.
@@ -151,11 +164,11 @@ impl App<'_> {
                 if let Some(doc) = self.current() {
                     doc.jump_to(from);
                 }
-                self.outline_focus = None;
+                self.leave_outline();
                 false
             }
-            KeyCode::Char('O') => {
-                self.outline_focus = None;
+            KeyCode::Char('O') | KeyCode::Char('o') => {
+                self.leave_outline();
                 self.outline_pane = false;
                 false
             }
@@ -186,8 +199,7 @@ impl App<'_> {
         let to = match code {
             // Read from here.
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-                self.outline_focus = None;
-                self.outline_filter = None;
+                self.leave_outline();
                 return false;
             }
             KeyCode::Down if shift => at.saturating_add(page),

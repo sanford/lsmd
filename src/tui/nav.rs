@@ -1,7 +1,7 @@
 //! Getting around documents: search, headings and the outline, and
 //! following links, with a history to go back through.
 
-use super::picker::{Outcome, Picker, Row, Target};
+use super::picker::{Outcome, Picker, Target};
 use super::{App, Focus};
 use crate::files;
 use crate::render;
@@ -61,26 +61,9 @@ impl App<'_> {
                     self.flash = Some(format!("No heading {which}"));
                 }
             }
-            KeyCode::Char('o') => {
-                if doc.headings().is_empty() {
-                    self.flash = Some("No headings".into());
-                } else {
-                    let top = doc.top();
-                    let current = doc.headings().iter().rposition(|h| h.line <= top);
-                    let rows = doc
-                        .headings()
-                        .iter()
-                        .map(|h| {
-                            let indent = "  ".repeat(usize::from(h.level.saturating_sub(1)));
-                            let text = Span::raw(h.text.clone());
-                            let text = if h.level <= 2 { text.bold() } else { text };
-                            let line = Line::from(vec![Span::raw(format!(" {indent}")), text]);
-                            Row::item(h.text.clone(), line, Target::Line(h.line))
-                        })
-                        .collect();
-                    self.prompt = Some(Prompt::Pick(Picker::new("Outline".into(), rows, current)));
-                }
-            }
+            // The outline pane, just while choosing: the document follows
+            // the selection, and the pane goes away after.
+            KeyCode::Char('o') => self.focus_outline(true),
             KeyCode::Char('L') => self.open_links(),
             KeyCode::Char('f') => self.show_hints(),
             KeyCode::Esc if doc.search_status().is_some() => doc.clear_search(),

@@ -24,7 +24,7 @@ Documentation piles up. A project that's been worked on for a while, especially 
 
 ![Reading a document reached by following a link; the footer says "esc back to DESIGN.md"](docs/images/reader.png)
 
-**Find your place in a long document.** The header always shows which section you're in (`§ Install › On Windows`), and a scrollbar shows where you are; click or drag it to jump. `/` searches the document, `]` and `[` jump between headings, `o` opens an outline you can filter, and `O` keeps the outline beside the text, highlighting the section you're reading. Move through it with the same keys as everything else, or `/` to filter it.
+**Find your place in a long document.** The header always shows which section you're in (`§ Install › On Windows`), and a scrollbar shows where you are; click or drag it to jump. `/` searches the document, `]` and `[` jump between headings, `o` opens the outline, where the text follows along as you move through the headings (`/` filters them), and `O` keeps the outline open beside the text, highlighting the section you're reading.
 
 **Stays current.** Documents reload as they're edited, keeping your place, so `lsmd` works beside your editor, or beside an agent that's writing. `e` opens your editor at the line you're reading.
 
@@ -107,10 +107,10 @@ Reading:
 | `←` `→` `h` `l` | Scroll long code lines sideways (`0` back to the start) |
 | `/` `n` `N` | Search this document; next and previous match |
 | `]` `[` | Next and previous heading |
-| `o` | Outline: jump to a heading (in this and every popup: `↑` `↓` `j` `k` move, `/` filters, `Enter` goes) |
-| `O` | The outline beside the document, following along as you read. `O` also moves the keyboard to it: `↑` `↓` `j` `k` go through the headings with the document following, `/` filters them, `Enter` reads from there, `Esc` goes back to where you were |
+| `o` | Outline: `↑` `↓` `j` `k` go through the headings with the text following as you move, `/` filters them, `Enter` reads from there, `Esc` goes back to where you were |
+| `O` | The same outline, kept open beside the document and following along as you read. `O` again gives it the keyboard |
 | `f` | Follow a link: type the letters drawn on it |
-| `L` | Links: what this links to, and what links here |
+| `L` | Links: what this links to, and what links here (in this and the other popups: `↑` `↓` `j` `k` move, `/` filters, `Enter` goes) |
 | `Esc` `Backspace` | Back to where you were before following a link; then the list |
 | `q` | Quit |
 
