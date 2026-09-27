@@ -8,7 +8,7 @@
 //! that renders as 10 lines, or a paragraph that wraps to 5, stays lined up.
 
 use crate::highlight;
-use crate::render::{RLine, render};
+use crate::render::{Heading, RLine, render};
 use crate::theme::Theme;
 use crate::wrap;
 use ratatui::Frame;
@@ -16,7 +16,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -61,8 +61,35 @@ struct SLine {
     segs: usize,
 }
 
+/// A search through the rendered text.
+struct Search {
+    query: String,
+    /// Every match: rendered line and columns.
+    matches: Vec<(usize, usize, usize)>,
+    /// The match last jumped to.
+    current: Option<usize>,
+}
+
+/// A label typed to follow the link it's drawn on.
+pub struct Hint {
+    pub label: String,
+    line: usize,
+    col: usize,
+    /// The link's target.
+    pub url: String,
+}
+
 pub struct Doc {
     md: String,
+    /// The directory relative links are relative to.
+    pub base: Option<PathBuf>,
+    headings: Vec<Heading>,
+    links: Vec<String>,
+    search: Option<Search>,
+    /// Link hints on screen, while choosing a link to follow.
+    pub hints: Vec<Hint>,
+    /// A heading to jump to once the document is laid out.
+    pending_anchor: Option<String>,
     /// When the file was last modified, as of loading it.
     pub modified: Option<SystemTime>,
 
@@ -91,6 +118,12 @@ impl Doc {
     pub fn new(md: String) -> Doc {
         Doc {
             md,
+            base: std::env::current_dir().ok(),
+            headings: Vec::new(),
+            links: Vec::new(),
+            search: None,
+            hints: Vec::new(),
+            pending_anchor: None,
             modified: None,
             lines: Vec::new(),
             blocks: Vec::new(),
@@ -116,6 +149,7 @@ impl Doc {
         };
         Doc {
             modified,
+            base: path.parent().map(Path::to_path_buf),
             ..Doc::new(md)
         }
     }
@@ -127,8 +161,14 @@ impl Doc {
             return;
         }
         let pos = (!self.lines.is_empty()).then(|| self.rendered_pos(self.top));
-        self.lines = render(&self.md, width, theme, false);
+        let rendered = render(&self.md, width, theme, false, self.base.as_deref());
+        self.lines = rendered.lines;
+        self.headings = rendered.headings;
+        self.links = rendered.links;
         self.width = width;
+        if let Some(query) = self.search.as_ref().map(|s| s.query.clone()) {
+            self.find(&query);
+        }
         self.blocks = blocks(&self.lines);
         self.max_left = self
             .lines
@@ -139,6 +179,9 @@ impl Doc {
             .unwrap_or(0);
         self.left = self.left.min(self.max_left);
         self.top = pos.map_or(0, |p| self.rendered_top_for(p));
+        if let Some(slug) = self.pending_anchor.take() {
+            self.go_to_anchor(&slug);
+        }
     }
 
     /// Wraps the source view for `width`, keeping the same line at the top.
@@ -254,9 +297,21 @@ impl Doc {
         } else {
             (area.x, area.x + source_w, area.x + source_w + 2)
         };
-        let source_area = Rect { x: source_x, width: source_w, ..area };
-        let bar_area = Rect { x: bar_x, width: rest.min(1), ..area };
-        let rendered_area = Rect { x: rendered_x, width: rest.saturating_sub(3), ..area };
+        let source_area = Rect {
+            x: source_x,
+            width: source_w,
+            ..area
+        };
+        let bar_area = Rect {
+            x: bar_x,
+            width: rest.min(1),
+            ..area
+        };
+        let rendered_area = Rect {
+            x: rendered_x,
+            width: rest.saturating_sub(3),
+            ..area
+        };
 
         let mut width = usize::from(rendered_area.width).max(1);
         if let Some(max) = split.max_width {
@@ -278,9 +333,52 @@ impl Doc {
         let visible: Vec<Line> = self.lines[self.top..]
             .iter()
             .take(self.height)
-            .map(|l| Line::from(self.scrolled(l, width)))
+            .enumerate()
+            .map(|(i, l)| {
+                let line = self.highlighted(self.top + i, l);
+                Line::from(self.scrolled(&line, width))
+            })
             .collect();
         f.render_widget(Paragraph::new(visible), area);
+
+        let style = Style::new().black().on_yellow().bold();
+        for hint in &self.hints {
+            let Some(row) = hint.line.checked_sub(self.top).filter(|&r| r < self.height) else {
+                continue;
+            };
+            if hint.col < width {
+                let x = area.x + hint.col as u16;
+                f.buffer_mut().set_stringn(
+                    x,
+                    area.y + row as u16,
+                    &hint.label,
+                    width - hint.col,
+                    style,
+                );
+            }
+        }
+    }
+
+    /// Line `i` with any search matches on it highlighted.
+    fn highlighted(&self, i: usize, line: &RLine) -> RLine {
+        let Some(search) = &self.search else {
+            return line.clone();
+        };
+        let first = search.matches.partition_point(|m| m.0 < i);
+        let mut line = line.clone();
+        for (n, &(_, start, end)) in search.matches[first..]
+            .iter()
+            .take_while(|m| m.0 == i)
+            .enumerate()
+        {
+            let style = if search.current == Some(first + n) {
+                Style::new().black().on_yellow()
+            } else {
+                Style::new().reversed()
+            };
+            line.spans = wrap::restyle(line.spans, start, end, style);
+        }
+        line
     }
 
     /// A rendered line as it appears scrolled `left` columns sideways, with
@@ -348,6 +446,191 @@ impl Doc {
         f.render_widget(Paragraph::new(visible), area);
     }
 
+    pub fn headings(&self) -> &[Heading] {
+        &self.headings
+    }
+
+    /// Scrolls the rendered side so line `i` is at the top.
+    pub fn jump_to(&mut self, i: usize) {
+        self.lead = Side::Rendered;
+        self.top = i.min(self.max_top(Side::Rendered));
+    }
+
+    /// Jumps to the next heading below the top of the screen, or the
+    /// previous one above it. Returns false if there isn't one.
+    pub fn jump_heading(&mut self, forward: bool) -> bool {
+        let top = self.top;
+        let line = if forward {
+            self.headings.iter().map(|h| h.line).find(|&l| l > top)
+        } else {
+            self.headings
+                .iter()
+                .map(|h| h.line)
+                .rev()
+                .find(|&l| l < top)
+        };
+        line.map(|l| self.jump_to(l)).is_some()
+    }
+
+    /// The line of the heading with anchor `slug`.
+    pub fn anchor(&self, slug: &str) -> Option<usize> {
+        let slug = slug.to_lowercase();
+        self.headings
+            .iter()
+            .find(|h| h.slug == slug)
+            .map(|h| h.line)
+    }
+
+    /// Jumps to the heading with anchor `slug`, now or, if the document
+    /// hasn't been laid out yet, as soon as it is.
+    pub fn go_to_anchor(&mut self, slug: &str) {
+        if self.width == 0 {
+            self.pending_anchor = Some(slug.to_string());
+        } else if let Some(line) = self.anchor(slug) {
+            self.jump_to(line);
+        }
+    }
+
+    pub fn top(&self) -> usize {
+        self.top
+    }
+
+    /// Searches the rendered text for `query` and jumps to the first match
+    /// at or after line `from`. Smart case: case matters only if the query
+    /// has capitals. Returns false if nothing matches.
+    pub fn search(&mut self, query: &str, from: usize) -> bool {
+        if query.is_empty() {
+            self.search = None;
+            return true;
+        }
+        self.find(query);
+        let search = self.search.as_mut().unwrap();
+        let next = search
+            .matches
+            .iter()
+            .position(|m| m.0 >= from)
+            .or((!search.matches.is_empty()).then_some(0));
+        search.current = next;
+        if let Some(i) = next {
+            let line = search.matches[i].0;
+            self.reveal(line);
+        }
+        next.is_some()
+    }
+
+    /// Moves to the next (or previous) match, wrapping around.
+    pub fn search_next(&mut self, forward: bool) -> bool {
+        let Some(search) = &mut self.search else {
+            return false;
+        };
+        let n = search.matches.len();
+        if n == 0 {
+            return false;
+        }
+        let i = match search.current {
+            Some(i) if forward => (i + 1) % n,
+            Some(i) => (i + n - 1) % n,
+            None => 0,
+        };
+        search.current = Some(i);
+        let line = search.matches[i].0;
+        self.reveal(line);
+        true
+    }
+
+    pub fn clear_search(&mut self) {
+        self.search = None;
+    }
+
+    /// "3/17" for the current match, or "0/0".
+    pub fn search_status(&self) -> Option<String> {
+        let s = self.search.as_ref()?;
+        let current = s.current.map_or(0, |i| i + 1);
+        Some(format!("{current}/{}", s.matches.len()))
+    }
+
+    /// Scrolls so line `i` is visible, a third of the way down if it wasn't.
+    fn reveal(&mut self, i: usize) {
+        self.lead = Side::Rendered;
+        if i < self.top || i >= self.top + self.height {
+            self.top = i
+                .saturating_sub(self.height / 3)
+                .min(self.max_top(Side::Rendered));
+        }
+    }
+
+    fn find(&mut self, query: &str) {
+        let case = query.chars().any(char::is_uppercase);
+        let fold = |c: char| {
+            if case {
+                c
+            } else {
+                c.to_lowercase().next().unwrap_or(c)
+            }
+        };
+        let needle: Vec<char> = query.chars().map(fold).collect();
+        let mut matches = Vec::new();
+        for (i, line) in self.lines.iter().enumerate() {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let chars: Vec<char> = text.chars().collect();
+            let mut col = 0;
+            let mut cols = Vec::with_capacity(chars.len() + 1);
+            for &c in &chars {
+                cols.push(col);
+                col += wrap::width(c.encode_utf8(&mut [0; 4]));
+            }
+            cols.push(col);
+            let mut at = 0;
+            while at + needle.len() <= chars.len() {
+                if chars[at..at + needle.len()]
+                    .iter()
+                    .map(|&c| fold(c))
+                    .eq(needle.iter().copied())
+                {
+                    matches.push((i, cols[at], cols[at + needle.len()]));
+                    at += needle.len().max(1);
+                } else {
+                    at += 1;
+                }
+            }
+        }
+        let current = self.search.as_ref().and_then(|s| s.current);
+        self.search = Some(Search {
+            query: query.to_string(),
+            current: current.filter(|&c| c < matches.len()),
+            matches,
+        });
+    }
+
+    /// The links on screen in the rendered view, top to bottom.
+    pub fn visible_links(&self) -> Vec<(usize, usize, String)> {
+        let mut out = Vec::new();
+        for (i, line) in self
+            .lines
+            .iter()
+            .enumerate()
+            .skip(self.top)
+            .take(self.height)
+        {
+            for l in &line.links {
+                out.push((i, l.start, self.links[l.id as usize].clone()));
+            }
+        }
+        out
+    }
+
+    pub fn set_hints(&mut self, hints: Vec<(String, usize, usize, String)>) {
+        self.hints = hints
+            .into_iter()
+            .map(|(label, line, col, url)| Hint {
+                label,
+                line,
+                col,
+                url,
+            })
+            .collect();
+    }
+
     pub fn scroll_by(&mut self, delta: isize, side: Side) {
         self.lead = side;
         let max = self.max_top(side);
@@ -397,10 +680,17 @@ impl Doc {
 fn blocks(lines: &[RLine]) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
-        let Some((first, last)) = line.src else { continue };
+        let Some((first, last)) = line.src else {
+            continue;
+        };
         match out.last_mut() {
             Some(b) if b.first == first && b.r1 + 1 == i => b.r1 = i,
-            _ => out.push(Block { first, last, r0: i, r1: i }),
+            _ => out.push(Block {
+                first,
+                last,
+                r0: i,
+                r1: i,
+            }),
         }
     }
     out
@@ -441,14 +731,22 @@ mod tests {
             }
         }
         // The table starts on source line 3.
-        let table = doc.lines.iter().position(|l| l.src == Some((3, 5))).unwrap();
+        let table = doc
+            .lines
+            .iter()
+            .position(|l| l.src == Some((3, 5)))
+            .unwrap();
         assert_eq!(doc.rendered_pos(table), 3.0);
     }
 
     #[test]
     fn scrolling_one_side_moves_the_other() {
         let mut doc = laid_out(20);
-        let para = doc.lines.iter().position(|l| l.src == Some((7, 7))).unwrap();
+        let para = doc
+            .lines
+            .iter()
+            .position(|l| l.src == Some((7, 7)))
+            .unwrap();
         doc.top = para;
         doc.lead = Side::Rendered;
         doc.sync(true);

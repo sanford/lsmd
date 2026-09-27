@@ -2,11 +2,13 @@
 
 use crate::highlight::{self, expand_tabs};
 use crate::theme::Theme;
-use crate::wrap::{self, Piece};
+use crate::wrap::{self, LinkSpan, Piece, WLine};
 use comrak::nodes::{AlertType, ListDelimType, ListType, NodeValue, TableAlignment};
-use comrak::{Arena, Node, Options, parse_document};
+use comrak::{Anchorizer, Arena, Node, Options, parse_document};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
+use std::cell::RefCell;
+use std::path::Path;
 
 /// One rendered line.
 #[derive(Clone, Debug)]
@@ -18,6 +20,25 @@ pub struct RLine {
     /// For unwrapped code: the column where the code starts, after any
     /// quote bars or list indents. Everything from there scrolls sideways.
     pub scroll_from: Option<usize>,
+    /// The links on this line, by column. Their ids index [`Rendered::links`].
+    pub links: Vec<LinkSpan>,
+}
+
+/// A rendered document.
+pub struct Rendered {
+    pub lines: Vec<RLine>,
+    pub headings: Vec<Heading>,
+    /// Link targets, as written.
+    pub links: Vec<String>,
+}
+
+pub struct Heading {
+    /// The rendered line it starts on.
+    pub line: usize,
+    pub level: u8,
+    pub text: String,
+    /// Its anchor, as GitHub makes them: `#getting-started`.
+    pub slug: String,
 }
 
 impl RLine {
@@ -46,7 +67,15 @@ fn options() -> Options<'static> {
 /// Renders `md` into lines at most `width` columns wide (except where the
 /// width is too small for a table's borders or a list's indent). Without
 /// `wrap_code`, long lines of code run past `width`, to be scrolled to.
-pub fn render(md: &str, width: usize, theme: &Theme, wrap_code: bool) -> Vec<RLine> {
+/// Relative links are checked against the files in `base`, the document's
+/// directory.
+pub fn render(
+    md: &str,
+    width: usize,
+    theme: &Theme,
+    wrap_code: bool,
+    base: Option<&Path>,
+) -> Rendered {
     let arena = Arena::new();
     let root = parse_document(&arena, md, &options());
     let mut r = Renderer {
@@ -59,13 +88,21 @@ pub fn render(md: &str, width: usize, theme: &Theme, wrap_code: bool) -> Vec<RLi
         src: None,
         list_depth: 0,
         footnotes: false,
+        base,
+        links: RefCell::new(Vec::new()),
+        headings: Vec::new(),
+        anchors: Anchorizer::new(),
     };
     for child in root.children() {
         let pos = child.data().sourcepos;
         r.src = Some((pos.start.line, pos.end.line));
         r.block(child, false);
     }
-    r.out
+    Rendered {
+        lines: r.out,
+        headings: r.headings,
+        links: r.links.into_inner(),
+    }
 }
 
 /// What goes in front of each line inside a container block: a quote bar,
@@ -87,13 +124,17 @@ struct Renderer<'t> {
     src: Option<(usize, usize)>,
     list_depth: usize,
     footnotes: bool,
+    base: Option<&'t Path>,
+    /// Link targets. A RefCell because inlines are collected through `&self`.
+    links: RefCell<Vec<String>>,
+    headings: Vec<Heading>,
+    anchors: Anchorizer,
 }
 
 impl Renderer<'_> {
     /// Columns left for content inside the current prefixes.
     fn avail(&self) -> usize {
-        let used: usize = self.prefix.iter().map(|p| wrap::spans_width(&p.rest)).sum();
-        self.width.saturating_sub(used).max(1)
+        self.width.saturating_sub(self.prefix_width()).max(1)
     }
 
     fn push_prefix(&mut self, first: Vec<Span<'static>>, rest: Vec<Span<'static>>) {
@@ -116,13 +157,17 @@ impl Renderer<'_> {
 
     fn flush_gap(&mut self) {
         if std::mem::take(&mut self.gap) && !self.out.is_empty() {
-            let mut blank: Vec<Span<'static>> =
-                self.prefix.iter().flat_map(|p| p.rest.iter().cloned()).collect();
+            let mut blank: Vec<Span<'static>> = self
+                .prefix
+                .iter()
+                .flat_map(|p| p.rest.iter().cloned())
+                .collect();
             trim_end(&mut blank);
             self.out.push(RLine {
                 spans: blank,
                 src: None,
                 scroll_from: None,
+                links: Vec::new(),
             });
         }
     }
@@ -131,7 +176,11 @@ impl Renderer<'_> {
         self.flush_gap();
         let mut line = Vec::new();
         for p in &mut self.prefix {
-            line.extend(if p.used { p.rest.clone() } else { p.first.clone() });
+            line.extend(if p.used {
+                p.rest.clone()
+            } else {
+                p.first.clone()
+            });
             p.used = true;
         }
         line.extend(spans);
@@ -139,21 +188,43 @@ impl Renderer<'_> {
             spans: line,
             src: self.src,
             scroll_from: None,
+            links: Vec::new(),
         });
     }
 
     /// Emits a line of unwrapped code, which scrolls sideways.
     fn emit_code(&mut self, spans: Vec<Span<'static>>) {
-        let prefix_w: usize = self.prefix.iter().map(|p| wrap::spans_width(&p.rest)).sum();
+        let prefix_w = self.prefix_width();
         self.emit(spans);
         if let Some(line) = self.out.last_mut() {
             line.scroll_from = Some(prefix_w);
         }
     }
 
+    fn prefix_width(&self) -> usize {
+        self.prefix.iter().map(|p| wrap::spans_width(&p.rest)).sum()
+    }
+
+    /// Emits a wrapped line, keeping track of its links.
+    fn emit_wrapped(&mut self, line: WLine) {
+        let shift = self.prefix_width();
+        self.emit(line.spans);
+        if let Some(out) = self.out.last_mut() {
+            out.links = line
+                .links
+                .into_iter()
+                .map(|l| LinkSpan {
+                    start: l.start + shift,
+                    end: l.end + shift,
+                    ..l
+                })
+                .collect();
+        }
+    }
+
     fn para(&mut self, pieces: &[Piece]) {
-        for line in wrap::wrap(pieces, self.avail()) {
-            self.emit(line);
+        for line in wrap::wrap_links(pieces, self.avail()) {
+            self.emit_wrapped(line);
         }
     }
 
@@ -224,13 +295,28 @@ impl Renderer<'_> {
         let style = self.theme.heading(level);
         let mut pieces = Vec::new();
         if level >= 3 {
-            pieces.push(Piece::Text(format!("{} ", "#".repeat(level.into())), self.theme.dim()));
+            pieces.push(Piece::Text(
+                format!("{} ", "#".repeat(level.into())),
+                self.theme.dim(),
+            ));
         }
         pieces.extend(self.inlines(node, style));
-        let lines = wrap::wrap(&pieces, self.avail());
-        let w = lines.iter().map(|l| wrap::spans_width(l)).max().unwrap_or(0);
+        let lines = wrap::wrap_links(&pieces, self.avail());
+        let w = lines
+            .iter()
+            .map(|l| wrap::spans_width(&l.spans))
+            .max()
+            .unwrap_or(0);
+        self.flush_gap();
+        let text = plain_text(node);
+        self.headings.push(Heading {
+            line: self.out.len(),
+            level,
+            slug: self.anchors.anchorize(&text),
+            text,
+        });
         for line in lines {
-            self.emit(line);
+            self.emit_wrapped(line);
         }
         if level <= 2 {
             let rule = if level == 1 { "═" } else { "─" };
@@ -261,7 +347,11 @@ impl Renderer<'_> {
         let items: Vec<_> = node.children().collect();
         let last = list.start + items.len().saturating_sub(1);
         let num_w = last.to_string().len();
-        let delim = if list.delimiter == ListDelimType::Paren { ')' } else { '.' };
+        let delim = if list.delimiter == ListDelimType::Paren {
+            ')'
+        } else {
+            '.'
+        };
         let bullet = ["•", "◦", "▪"][self.list_depth % 3];
         self.list_depth += 1;
         for (i, item) in items.into_iter().enumerate() {
@@ -270,9 +360,10 @@ impl Renderer<'_> {
                     ("☑".to_string(), self.theme.task_done())
                 }
                 NodeValue::TaskItem(_) => ("☐".to_string(), self.theme.bullet()),
-                _ if list.list_type == ListType::Ordered => {
-                    (format!("{:>num_w$}{delim}", list.start + i), self.theme.bullet())
-                }
+                _ if list.list_type == ListType::Ordered => (
+                    format!("{:>num_w$}{delim}", list.start + i),
+                    self.theme.bullet(),
+                ),
                 _ => (bullet.to_string(), self.theme.bullet()),
             };
             let indent = " ".repeat(wrap::width(&marker) + 1);
@@ -300,7 +391,11 @@ impl Renderer<'_> {
         // Unwrapped, every line is one chunk, however long.
         let wrap_code = self.wrap_code;
         let chunks = |line: Vec<Span<'static>>, width: usize| {
-            if wrap_code { wrap::hard_wrap(line, width) } else { vec![line] }
+            if wrap_code {
+                wrap::hard_wrap(line, width)
+            } else {
+                vec![line]
+            }
         };
         if !theme.color {
             // No background to set the code apart, so indent it instead.
@@ -319,7 +414,11 @@ impl Renderer<'_> {
         // widest line, unwrapped), with a column of padding on each side and
         // the language in the top right corner.
         let inner = self.avail().saturating_sub(2).max(1);
-        let widest = lines.iter().map(|l| wrap::spans_width(l)).max().unwrap_or(0);
+        let widest = lines
+            .iter()
+            .map(|l| wrap::spans_width(l))
+            .max()
+            .unwrap_or(0);
         let block_w = if wrap_code { inner } else { inner.max(widest) };
         let mut first = true;
         for line in lines {
@@ -395,7 +494,11 @@ impl Renderer<'_> {
             .children()
             .map(|row| {
                 let header = matches!(row.data().value, NodeValue::TableRow(true));
-                let base = if header { header_style } else { Style::default() };
+                let base = if header {
+                    header_style
+                } else {
+                    Style::default()
+                };
                 let mut cells: Vec<_> = row.children().map(|c| self.inlines(c, base)).collect();
                 cells.resize_with(ncols, Vec::new);
                 (header, cells)
@@ -413,7 +516,12 @@ impl Renderer<'_> {
             })
             .collect();
         let words: Vec<usize> = (0..ncols)
-            .map(|c| rows.iter().map(|(_, cells)| wrap::longest_word(&cells[c])).max().unwrap_or(0))
+            .map(|c| {
+                rows.iter()
+                    .map(|(_, cells)| wrap::longest_word(&cells[c]))
+                    .max()
+                    .unwrap_or(0)
+            })
             .collect();
         let borders = 3 * ncols + 1;
         let widths = fit_columns(&natural, &words, self.avail().saturating_sub(borders));
@@ -430,28 +538,40 @@ impl Renderer<'_> {
         self.emit(rule("┌", "┬", "┐"));
         let nrows = rows.len();
         for (r, (header, cells)) in rows.iter().enumerate() {
-            let wrapped: Vec<_> = cells
+            let mut wrapped: Vec<_> = cells
                 .iter()
                 .zip(&widths)
-                .map(|(cell, &w)| wrap::wrap(cell, w))
+                .map(|(cell, &w)| wrap::wrap_links(cell, w))
                 .collect();
             let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
             for i in 0..height {
-                let mut spans = vec![Span::styled("│", border)];
-                for (c, lines) in wrapped.iter().enumerate() {
-                    let line = lines.get(i).cloned().unwrap_or_default();
-                    let slack = widths[c].saturating_sub(wrap::spans_width(&line));
+                let mut row = WLine {
+                    spans: vec![Span::styled("│", border)],
+                    links: Vec::new(),
+                };
+                let mut col = 1;
+                for (c, lines) in wrapped.iter_mut().enumerate() {
+                    let line = lines.get_mut(i).map(std::mem::take).unwrap_or_default();
+                    let line_w = wrap::spans_width(&line.spans);
+                    let slack = widths[c].saturating_sub(line_w);
                     let left = match aligns[c] {
                         TableAlignment::Center => slack / 2,
                         TableAlignment::Right => slack,
                         _ => 0,
                     };
-                    spans.push(Span::raw(" ".repeat(left + 1)));
-                    spans.extend(line);
-                    spans.push(Span::raw(" ".repeat(slack - left + 1)));
-                    spans.push(Span::styled("│", border));
+                    let start = col + left + 1;
+                    row.spans.push(Span::raw(" ".repeat(left + 1)));
+                    row.spans.extend(line.spans);
+                    row.links.extend(line.links.into_iter().map(|l| LinkSpan {
+                        start: l.start + start,
+                        end: l.end + start,
+                        ..l
+                    }));
+                    row.spans.push(Span::raw(" ".repeat(slack - left + 1)));
+                    row.spans.push(Span::styled("│", border));
+                    col += widths[c] + 3;
                 }
-                self.emit(spans);
+                self.emit_wrapped(row);
             }
             if *header && r + 1 < nrows {
                 self.emit(rule("├", "┼", "┤"));
@@ -495,25 +615,40 @@ impl Renderer<'_> {
             NodeValue::Highlight => self.inline_children(node, styled(Modifier::REVERSED), out),
             NodeValue::SpoileredText => self.inline_children(node, styled(Modifier::DIM), out),
             NodeValue::Link(link) => {
+                let url = link.url.as_str();
+                let link_style = if self.broken(url) {
+                    theme.broken_link()
+                } else {
+                    theme.link()
+                };
                 let text_start = out.len();
-                self.inline_children(node, style.patch(theme.link()), out);
+                out.push(Piece::LinkStart(self.add_link(url)));
+                self.inline_children(node, style.patch(link_style), out);
+                out.push(Piece::LinkEnd);
                 let text: String = out[text_start..]
                     .iter()
                     .filter_map(|p| match p {
                         Piece::Text(t, _) => Some(t.as_str()),
-                        Piece::Break => None,
+                        _ => None,
                     })
                     .collect();
-                let url = link.url.as_str();
                 let shown = url.strip_prefix("mailto:").unwrap_or(url);
                 if !url.is_empty() && !url.starts_with('#') && text != shown {
                     out.push(Piece::Text(format!(" ({url})"), theme.dim()));
                 }
             }
-            NodeValue::WikiLink(_) => self.inline_children(node, style.patch(theme.link()), out),
+            NodeValue::WikiLink(link) => {
+                out.push(Piece::LinkStart(self.add_link(&link.url)));
+                self.inline_children(node, style.patch(theme.link()), out);
+                out.push(Piece::LinkEnd);
+            }
             NodeValue::Image(link) => {
                 let alt = plain_text(node);
-                let label = if alt.is_empty() { "[image]".into() } else { format!("[image: {alt}]") };
+                let label = if alt.is_empty() {
+                    "[image]".into()
+                } else {
+                    format!("[image: {alt}]")
+                };
                 out.push(Piece::Text(label, style.patch(theme.key())));
                 if !link.url.is_empty() {
                     out.push(Piece::Text(format!(" ({})", link.url), theme.dim()));
@@ -529,11 +664,62 @@ impl Renderer<'_> {
         }
     }
 
+    fn add_link(&self, url: &str) -> u32 {
+        let mut links = self.links.borrow_mut();
+        links.push(url.to_string());
+        (links.len() - 1) as u32
+    }
+
+    /// Whether `url` is a relative link to a file that isn't there.
+    fn broken(&self, url: &str) -> bool {
+        let Some(base) = self.base else { return false };
+        let Some(path) = local_path(url) else {
+            return false;
+        };
+        !path.is_empty() && !path.starts_with('/') && !base.join(path).exists()
+    }
+
     fn inline_children(&self, node: Node<'_>, style: Style, out: &mut Vec<Piece>) {
         for child in node.children() {
             self.inline(child, style, out);
         }
     }
+}
+
+/// The file part of a link that points into the file system rather than
+/// the web: `docs/a b.md` for `docs/a%20b.md#usage`.
+pub fn local_path(url: &str) -> Option<String> {
+    let scheme = url.find(':').is_some_and(|i| {
+        url[..i]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+            && i > 1
+    });
+    if scheme || url.starts_with("//") {
+        return None;
+    }
+    let path = url.split(['#', '?']).next().unwrap_or("");
+    Some(percent_decode(path))
+}
+
+/// Decodes `%20` and friends. Invalid escapes are kept as they are.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(hex) = s.get(i + 1..i + 3)
+            && let Ok(b) = u8::from_str_radix(hex, 16)
+        {
+            out.push(b);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The text of a node's descendants with formatting dropped (image alt text).
@@ -613,7 +799,8 @@ mod tests {
     use super::*;
 
     fn plain(md: &str, width: usize) -> String {
-        render(md, width, &Theme::plain(), true)
+        render(md, width, &Theme::plain(), true, None)
+            .lines
             .iter()
             .map(|l| l.text() + "\n")
             .collect()
@@ -630,21 +817,82 @@ mod tests {
 
     #[test]
     fn records_source_lines() {
-        let lines = render("# Title\n\npara one\nstill one\n\npara two\n", 80, &Theme::plain(), true);
+        let lines = render(
+            "# Title\n\npara one\nstill one\n\npara two\n",
+            80,
+            &Theme::plain(),
+            true,
+            None,
+        )
+        .lines;
         let src: Vec<_> = lines.iter().map(|l| l.src).collect();
         assert_eq!(
             src,
-            [Some((1, 1)), Some((1, 1)), None, Some((3, 4)), None, Some((6, 6))]
+            [
+                Some((1, 1)),
+                Some((1, 1)),
+                None,
+                Some((3, 4)),
+                None,
+                Some((6, 6))
+            ]
         );
     }
 
     #[test]
     fn leaves_code_unwrapped_for_scrolling() {
         let md = "> ```\n> a long line of code\n> ```\n";
-        let lines = render(md, 12, &Theme::plain(), false);
+        let lines = render(md, 12, &Theme::plain(), false, None).lines;
         let code = lines.iter().find(|l| l.text().contains("long")).unwrap();
         assert_eq!(code.text(), "│     a long line of code");
         assert_eq!(code.scroll_from, Some(2));
+    }
+
+    #[test]
+    fn records_headings_and_links() {
+        let md = "# Intro\n\nSee [the guide](guide.md#setup) and [web](https://x.io).\n\n## Intro\n\n| a |\n|---|\n| [t](#intro) |\n";
+        let r = render(md, 80, &Theme::plain(), true, None);
+        let slugs: Vec<_> = r
+            .headings
+            .iter()
+            .map(|h| (h.line, h.slug.as_str()))
+            .collect();
+        assert_eq!(slugs, [(0, "intro"), (5, "intro-1")]);
+        assert_eq!(r.links, ["guide.md#setup", "https://x.io", "#intro"]);
+        let para = &r.lines[3];
+        assert_eq!(
+            para.links[0],
+            LinkSpan {
+                start: 4,
+                end: 13,
+                id: 0
+            }
+        );
+        let cell = r
+            .lines
+            .iter()
+            .find(|l| l.text().starts_with("│ t"))
+            .unwrap();
+        assert_eq!(
+            cell.links,
+            [LinkSpan {
+                start: 2,
+                end: 3,
+                id: 2
+            }]
+        );
+    }
+
+    #[test]
+    fn finds_local_paths() {
+        assert_eq!(
+            local_path("docs/a%20b.md#x").as_deref(),
+            Some("docs/a b.md")
+        );
+        assert_eq!(local_path("#top").as_deref(), Some(""));
+        assert_eq!(local_path("https://x.io/a.md"), None);
+        assert_eq!(local_path("mailto:me@x.io"), None);
+        assert_eq!(local_path("C:/x.md").as_deref(), Some("C:/x.md"));
     }
 
     #[test]

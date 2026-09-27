@@ -88,7 +88,10 @@ pub fn by_modified(a: &Entry, b: &Entry) -> Ordering {
 
 /// "5m ago", "3d ago", ...: short enough for a column.
 pub fn ago(time: Option<SystemTime>, now: SystemTime) -> String {
-    let Some(secs) = time.and_then(|t| now.duration_since(t).ok()).map(|d| d.as_secs()) else {
+    let Some(secs) = time
+        .and_then(|t| now.duration_since(t).ok())
+        .map(|d| d.as_secs())
+    else {
         return String::new();
     };
     const MIN: u64 = 60;
@@ -119,15 +122,29 @@ mod tests {
 
     #[test]
     fn sorts_readme_first_and_files_before_subdirectories() {
-        let mut v: Vec<_> = ["docs/b.md", "zeta.md", "docs/README.md", "Alpha.md", "README.md", "docs/deep/a.md"]
-            .into_iter()
-            .map(entry)
-            .collect();
+        let mut v: Vec<_> = [
+            "docs/b.md",
+            "zeta.md",
+            "docs/README.md",
+            "Alpha.md",
+            "README.md",
+            "docs/deep/a.md",
+        ]
+        .into_iter()
+        .map(entry)
+        .collect();
         v.sort_by(by_path);
         let order: Vec<_> = v.iter().map(|e| e.rel.as_str()).collect();
         assert_eq!(
             order,
-            ["README.md", "Alpha.md", "zeta.md", "docs/README.md", "docs/b.md", "docs/deep/a.md"]
+            [
+                "README.md",
+                "Alpha.md",
+                "zeta.md",
+                "docs/README.md",
+                "docs/b.md",
+                "docs/deep/a.md"
+            ]
         );
     }
 

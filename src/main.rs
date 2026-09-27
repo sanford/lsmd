@@ -9,10 +9,10 @@ mod tui;
 mod wrap;
 
 use clap::Parser;
+use doc::SourceSide;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use doc::SourceSide;
 use theme::{Mode, Theme};
 
 /// Browse and read Markdown in the terminal.
@@ -78,12 +78,27 @@ fn run(args: Args) -> io::Result<()> {
         };
         return tui::run(source, &theme, settings);
     }
-    let md = match source {
-        tui::Source::Text { md, .. } => md,
-        tui::Source::Browse { open: Some(path), .. } => read(&path)?,
-        tui::Source::Browse { root, open: None, all } => return list_files(&root, all),
+    // Relative links are checked against the document's directory.
+    let (md, base) = match source {
+        tui::Source::Text { md, .. } => (md, std::env::current_dir().ok()),
+        tui::Source::Browse {
+            open: Some(path), ..
+        } => (read(&path)?, path.parent().map(Path::to_path_buf)),
+        tui::Source::Browse {
+            root,
+            open: None,
+            all,
+        } => return list_files(&root, all),
     };
-    let lines = render::render(&md, width.unwrap_or_else(terminal_width), &theme, true);
+    let base = base.as_deref();
+    let lines = render::render(
+        &md,
+        width.unwrap_or_else(terminal_width),
+        &theme,
+        true,
+        base,
+    )
+    .lines;
     ansi::print(&lines, &mut io::stdout().lock())
 }
 
@@ -93,7 +108,10 @@ fn source(path: Option<&Path>, all: bool) -> io::Result<tui::Source> {
         let mut bytes = Vec::new();
         io::stdin().read_to_end(&mut bytes)?;
         let md = String::from_utf8_lossy(&bytes).into_owned();
-        Ok(tui::Source::Text { title: "stdin".into(), md })
+        Ok(tui::Source::Text {
+            title: "stdin".into(),
+            md,
+        })
     };
     let cwd = std::fs::canonicalize(std::env::current_dir()?)?;
     let path = match path {
@@ -104,7 +122,11 @@ fn source(path: Option<&Path>, all: bool) -> io::Result<tui::Source> {
         None => cwd.clone(),
     };
     if path.is_dir() {
-        return Ok(tui::Source::Browse { root: path, open: None, all });
+        return Ok(tui::Source::Browse {
+            root: path,
+            open: None,
+            all,
+        });
     }
     // Browse from the current directory if the file is somewhere under it,
     // otherwise from the file's own directory.
@@ -113,7 +135,11 @@ fn source(path: Option<&Path>, all: bool) -> io::Result<tui::Source> {
     } else {
         path.parent().map_or(cwd, Path::to_path_buf)
     };
-    Ok(tui::Source::Browse { root, open: Some(path), all })
+    Ok(tui::Source::Browse {
+        root,
+        open: Some(path),
+        all,
+    })
 }
 
 fn read(path: &Path) -> io::Result<String> {
@@ -139,7 +165,11 @@ fn terminal_width() -> usize {
         .ok()
         .and_then(|c| c.parse().ok())
         .filter(|&w| w > 0)
-        .or_else(|| ratatui::crossterm::terminal::size().ok().map(|(w, _)| w.into()))
+        .or_else(|| {
+            ratatui::crossterm::terminal::size()
+                .ok()
+                .map(|(w, _)| w.into())
+        })
         .filter(|&w| w > 0)
         .unwrap_or(80)
 }

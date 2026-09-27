@@ -84,7 +84,15 @@ impl Theme {
     }
 
     pub fn link(&self) -> Style {
-        self.s(Style::new().fg(Color::Blue).add_modifier(Modifier::UNDERLINED))
+        self.s(Style::new()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::UNDERLINED))
+    }
+
+    pub fn broken_link(&self) -> Style {
+        self.s(Style::new()
+            .fg(Color::Red)
+            .add_modifier(Modifier::CROSSED_OUT))
     }
 
     pub fn inline_code(&self) -> Style {
@@ -141,7 +149,11 @@ impl Theme {
 
     /// Applies `modifier` (bold, italic, ...) only when styling is on.
     pub fn modifier(&self, style: Style, modifier: Modifier) -> Style {
-        if self.color { style.add_modifier(modifier) } else { style }
+        if self.color {
+            style.add_modifier(modifier)
+        } else {
+            style
+        }
     }
 }
 
@@ -163,7 +175,14 @@ fn ansi256(r: u8, g: u8, b: u8) -> u8 {
     };
     let (ri, gi, bi) = (nearest(r), nearest(g), nearest(b));
     let cube = 16 + 36 * ri + 6 * gi + bi;
-    let cube_err = dist((r, g, b), (LEVELS[ri as usize], LEVELS[gi as usize], LEVELS[bi as usize]));
+    let cube_err = dist(
+        (r, g, b),
+        (
+            LEVELS[ri as usize],
+            LEVELS[gi as usize],
+            LEVELS[bi as usize],
+        ),
+    );
 
     let avg = (r as u32 + g as u32 + b as u32) / 3;
     let gi = (avg.saturating_sub(8) / 10).min(23) as u8;

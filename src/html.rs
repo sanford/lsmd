@@ -9,9 +9,38 @@ use ratatui::style::{Modifier, Style};
 
 /// Tags that start a new line.
 const BLOCK: &[&str] = &[
-    "address", "article", "aside", "blockquote", "br", "center", "details", "dd", "div", "dl",
-    "dt", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr",
-    "li", "nav", "ol", "p", "pre", "section", "summary", "table", "tr", "ul",
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "br",
+    "center",
+    "details",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "summary",
+    "table",
+    "tr",
+    "ul",
 ];
 
 /// Tags whose content isn't meant to be read.
@@ -150,13 +179,18 @@ fn tidy(pieces: Vec<Piece>) -> Vec<Piece> {
                 }
             }
             Piece::Text(text, style) => {
-                let text = if content { text } else { text.trim_start().to_string() };
+                let text = if content {
+                    text
+                } else {
+                    text.trim_start().to_string()
+                };
                 if text.is_empty() {
                     continue;
                 }
                 content = true;
                 out.push(Piece::Text(text, style));
             }
+            other => out.push(other),
         }
     }
     trim_line_end(&mut out);
@@ -177,8 +211,19 @@ fn tag_name(tag: &str) -> String {
 fn is_void(name: &str) -> bool {
     matches!(
         name,
-        "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input" | "link" | "meta"
-            | "source" | "track" | "wbr"
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "source"
+            | "track"
+            | "wbr"
     )
 }
 
@@ -197,7 +242,10 @@ fn attr(tag: &str, name: &str) -> Option<String> {
         let value = rest[1..].trim_start();
         return Some(match value.chars().next() {
             Some(q @ ('"' | '\'')) => value[1..].split(q).next().unwrap_or("").to_string(),
-            _ => value.split(|c: char| c.is_whitespace() || c == '>').next()?.to_string(),
+            _ => value
+                .split(|c: char| c.is_whitespace() || c == '>')
+                .next()?
+                .to_string(),
         });
     }
     None
@@ -262,6 +310,7 @@ mod tests {
             .map(|p| match p {
                 Piece::Text(t, _) => t.as_str(),
                 Piece::Break => "\n",
+                _ => "",
             })
             .collect()
     }
@@ -283,7 +332,10 @@ mod tests {
 
     #[test]
     fn keeps_text_and_breaks() {
-        assert_eq!(text("<div>one<br>two &amp; three</div>"), "one\ntwo & three");
+        assert_eq!(
+            text("<div>one<br>two &amp; three</div>"),
+            "one\ntwo & three"
+        );
         assert_eq!(
             text("<details><summary>More</summary>\n\nHidden<!-- no --></details>"),
             "More\nHidden"
@@ -293,13 +345,19 @@ mod tests {
 
     #[test]
     fn reads_attributes() {
-        assert_eq!(attr(r#"img src="a" alt="b c""#, "alt").as_deref(), Some("b c"));
+        assert_eq!(
+            attr(r#"img src="a" alt="b c""#, "alt").as_deref(),
+            Some("b c")
+        );
         assert_eq!(attr("img alt=plain src=x", "alt").as_deref(), Some("plain"));
         assert_eq!(attr(r#"img data-alt="no""#, "alt"), None);
     }
 
     #[test]
     fn decodes_entities() {
-        assert_eq!(decode("&lt;a&gt; &#39;x&#x27; &bogus; &"), "<a> 'x' &bogus; &");
+        assert_eq!(
+            decode("&lt;a&gt; &#39;x&#x27; &bogus; &"),
+            "<a> 'x' &bogus; &"
+        );
     }
 }

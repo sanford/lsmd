@@ -11,6 +11,24 @@ pub enum Piece {
     Text(String, Style),
     /// A hard line break.
     Break,
+    /// The text up to the next `LinkEnd` is link number `id`.
+    LinkStart(u32),
+    LinkEnd,
+}
+
+/// Where a link landed on a wrapped line: columns `start..end`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LinkSpan {
+    pub start: usize,
+    pub end: usize,
+    pub id: u32,
+}
+
+/// A wrapped line, with the links on it.
+#[derive(Default)]
+pub struct WLine {
+    pub spans: Vec<Span<'static>>,
+    pub links: Vec<LinkSpan>,
 }
 
 /// Display width of `s` in terminal columns.
@@ -23,18 +41,27 @@ pub fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| width(&s.content)).sum()
 }
 
+struct Part {
+    text: String,
+    style: Style,
+    link: Option<u32>,
+}
+
 enum Unit {
     /// Consecutive non-space text, possibly in several styles (`**foo**bar`).
-    Word(Vec<(String, Style)>),
-    Space(Style),
+    Word(Vec<Part>),
+    Space(Style, Option<u32>),
     Break,
 }
 
 fn units(pieces: &[Piece]) -> Vec<Unit> {
     let mut units = Vec::new();
-    let mut word: Vec<(String, Style)> = Vec::new();
+    let mut word: Vec<Part> = Vec::new();
+    let mut link = None;
     for piece in pieces {
         match piece {
+            Piece::LinkStart(id) => link = Some(*id),
+            Piece::LinkEnd => link = None,
             Piece::Break => {
                 if !word.is_empty() {
                     units.push(Unit::Word(std::mem::take(&mut word)));
@@ -42,24 +69,33 @@ fn units(pieces: &[Piece]) -> Vec<Unit> {
                 units.push(Unit::Break);
             }
             Piece::Text(text, style) => {
+                let style = *style;
                 let mut run = String::new();
                 for c in text.chars() {
                     if c.is_whitespace() && c != '\u{a0}' {
                         if !run.is_empty() {
-                            word.push((std::mem::take(&mut run), *style));
+                            word.push(Part {
+                                text: std::mem::take(&mut run),
+                                style,
+                                link,
+                            });
                         }
                         if !word.is_empty() {
                             units.push(Unit::Word(std::mem::take(&mut word)));
                         }
-                        if !matches!(units.last(), Some(Unit::Space(_))) {
-                            units.push(Unit::Space(*style));
+                        if !matches!(units.last(), Some(Unit::Space(..))) {
+                            units.push(Unit::Space(style, link));
                         }
                     } else {
                         run.push(c);
                     }
                 }
                 if !run.is_empty() {
-                    word.push((run, *style));
+                    word.push(Part {
+                        text: run,
+                        style,
+                        link,
+                    });
                 }
             }
         }
@@ -76,7 +112,7 @@ pub fn longest_word(pieces: &[Piece]) -> usize {
     units(pieces)
         .iter()
         .map(|u| match u {
-            Unit::Word(parts) => parts.iter().map(|(t, _)| width(t)).sum(),
+            Unit::Word(parts) => parts.iter().map(|p| width(&p.text)).sum(),
             _ => 0,
         })
         .max()
@@ -89,69 +125,109 @@ pub fn longest_word(pieces: &[Piece]) -> usize {
 /// dropped. A word longer than a whole line is split between graphemes.
 /// Always returns at least one (possibly empty) line.
 pub fn wrap(pieces: &[Piece], width: usize) -> Vec<Vec<Span<'static>>> {
+    wrap_links(pieces, width)
+        .into_iter()
+        .map(|l| l.spans)
+        .collect()
+}
+
+/// Lines being built by [`wrap_links`].
+#[derive(Default)]
+struct Lines {
+    done: Vec<WLine>,
+    cur: WLine,
+    w: usize,
+}
+
+impl Lines {
+    fn push(&mut self, text: String, style: Style, link: Option<u32>) {
+        let tw = width(&text);
+        if let Some(id) = link {
+            match self.cur.links.last_mut() {
+                Some(l) if l.id == id && l.end == self.w => l.end += tw,
+                _ => self.cur.links.push(LinkSpan {
+                    start: self.w,
+                    end: self.w + tw,
+                    id,
+                }),
+            }
+        }
+        self.cur.spans.push(Span::styled(text, style));
+        self.w += tw;
+    }
+
+    fn newline(&mut self) {
+        self.done.push(std::mem::take(&mut self.cur));
+        self.w = 0;
+    }
+}
+
+/// [`wrap`], also saying where each link ended up.
+pub fn wrap_links(pieces: &[Piece], width: usize) -> Vec<WLine> {
     let width = width.max(1);
-    let mut lines = Vec::new();
-    let mut cur: Vec<Span<'static>> = Vec::new();
-    let mut cur_w = 0;
-    let mut space: Option<Style> = None;
+    let mut out = Lines::default();
+    let mut space: Option<(Style, Option<u32>)> = None;
 
     for unit in units(pieces) {
         match unit {
             Unit::Break => {
-                lines.push(std::mem::take(&mut cur));
-                cur_w = 0;
+                out.newline();
                 space = None;
             }
-            Unit::Space(style) => {
-                if cur_w > 0 {
-                    space = Some(style);
+            Unit::Space(style, link) => {
+                if out.w > 0 {
+                    space = Some((style, link));
                 }
             }
             Unit::Word(parts) => {
-                let w: usize = parts.iter().map(|(t, _)| self::width(t)).sum();
+                let w: usize = parts.iter().map(|p| self::width(&p.text)).sum();
                 let space_w = usize::from(space.is_some());
-                if cur_w > 0 && cur_w + space_w + w > width {
-                    lines.push(std::mem::take(&mut cur));
-                    cur_w = 0;
-                } else if let Some(style) = space {
-                    cur.push(Span::styled(" ", style));
-                    cur_w += 1;
+                if out.w > 0 && out.w + space_w + w > width {
+                    out.newline();
+                } else if let Some((style, link)) = space {
+                    out.push(" ".into(), style, link);
                 }
                 space = None;
 
-                if w <= width - cur_w {
-                    for (text, style) in parts {
-                        cur.push(Span::styled(text, style));
+                if w <= width - out.w {
+                    for p in parts {
+                        out.push(p.text, p.style, p.link);
                     }
-                    cur_w += w;
                     continue;
                 }
                 // Too long for any line: split it wherever it runs out of room.
-                for (text, style) in parts {
+                for p in parts {
                     let mut chunk = String::new();
-                    for g in text.graphemes(true) {
+                    let mut chunk_w = 0;
+                    for g in p.text.graphemes(true) {
                         let gw = self::width(g);
-                        if cur_w + gw > width && cur_w > 0 {
+                        if out.w + chunk_w + gw > width && out.w + chunk_w > 0 {
                             if !chunk.is_empty() {
-                                cur.push(Span::styled(std::mem::take(&mut chunk), style));
+                                out.push(std::mem::take(&mut chunk), p.style, p.link);
+                                chunk_w = 0;
                             }
-                            lines.push(std::mem::take(&mut cur));
-                            cur_w = 0;
+                            out.newline();
                         }
                         chunk.push_str(g);
-                        cur_w += gw;
+                        chunk_w += gw;
                     }
                     if !chunk.is_empty() {
-                        cur.push(Span::styled(chunk, style));
+                        out.push(chunk, p.style, p.link);
                     }
                 }
             }
         }
     }
-    if !cur.is_empty() || lines.is_empty() {
-        lines.push(cur);
+    if !out.cur.spans.is_empty() || out.done.is_empty() {
+        out.newline();
     }
-    lines.into_iter().map(merge).collect()
+    out.done
+        .into_iter()
+        .map(|l| WLine {
+            spans: merge(l.spans),
+            links: l.links,
+        })
+        .collect()
 }
 
 /// Joins neighboring spans that have the same style.
@@ -216,7 +292,11 @@ pub fn wrap_source(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'sta
     }
     let cells: Vec<(&str, Style, usize)> = spans
         .iter()
-        .flat_map(|s| s.content.graphemes(true).map(move |g| (g, s.style, width_of(g))))
+        .flat_map(|s| {
+            s.content
+                .graphemes(true)
+                .map(move |g| (g, s.style, width_of(g)))
+        })
         .collect();
     let mut lines = Vec::new();
     let mut start = 0;
@@ -276,6 +356,49 @@ pub fn slice(spans: &[Span<'static>], start: usize, len: usize) -> Vec<Span<'sta
     out
 }
 
+/// Patches `style` onto columns `start..end` of a line.
+pub fn restyle(
+    spans: Vec<Span<'static>>,
+    start: usize,
+    end: usize,
+    style: Style,
+) -> Vec<Span<'static>> {
+    let mut out = Vec::with_capacity(spans.len() + 2);
+    let mut col = 0;
+    for span in spans {
+        let w = width(&span.content);
+        if col + w <= start || col >= end {
+            col += w;
+            out.push(span);
+            continue;
+        }
+        // Split the span into the parts before, inside and after the range.
+        let mut parts: [String; 3] = Default::default();
+        for g in span.content.graphemes(true) {
+            let part = if col < start {
+                0
+            } else if col < end {
+                1
+            } else {
+                2
+            };
+            parts[part].push_str(g);
+            col += width_of(g);
+        }
+        for (i, text) in parts.into_iter().enumerate() {
+            if !text.is_empty() {
+                let s = if i == 1 {
+                    span.style.patch(style)
+                } else {
+                    span.style
+                };
+                out.push(Span::styled(text, s));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,18 +439,61 @@ mod tests {
 
     #[test]
     fn splits_long_words() {
-        assert_eq!(text(&wrap(&plain("abcdefgh ij"), 3)), ["abc", "def", "gh", "ij"]);
+        assert_eq!(
+            text(&wrap(&plain("abcdefgh ij"), 3)),
+            ["abc", "def", "gh", "ij"]
+        );
     }
 
     #[test]
     fn counts_wide_characters() {
-        assert_eq!(text(&wrap(&plain("日本語 日本語"), 7)), ["日本語", "日本語"]);
+        assert_eq!(
+            text(&wrap(&plain("日本語 日本語"), 7)),
+            ["日本語", "日本語"]
+        );
     }
 
     #[test]
     fn merges_same_style_spans() {
         let lines = wrap(&plain("one two three"), 80);
         assert_eq!(lines[0].len(), 1);
+    }
+
+    #[test]
+    fn tracks_links_across_lines() {
+        let pieces = vec![
+            Piece::Text("see ".into(), Style::default()),
+            Piece::LinkStart(7),
+            Piece::Text("the docs".into(), Style::default()),
+            Piece::LinkEnd,
+            Piece::Text(" now".into(), Style::default()),
+        ];
+        let lines = wrap_links(&pieces, 80);
+        assert_eq!(
+            lines[0].links,
+            [LinkSpan {
+                start: 4,
+                end: 12,
+                id: 7
+            }]
+        );
+        let lines = wrap_links(&pieces, 7);
+        assert_eq!(
+            lines[0].links,
+            [LinkSpan {
+                start: 4,
+                end: 7,
+                id: 7
+            }]
+        );
+        assert_eq!(
+            lines[1].links,
+            [LinkSpan {
+                start: 0,
+                end: 4,
+                id: 7
+            }]
+        );
     }
 
     #[test]
@@ -355,6 +521,19 @@ mod tests {
         assert_eq!(text(&[slice(&spans, 3, 3)]), [" 本"]);
         assert_eq!(text(&[slice(&spans, 3, 2)]), ["  "]);
         assert_eq!(text(&[slice(&spans, 2, 3)]), ["日 "]);
+    }
+
+    #[test]
+    fn restyles_a_range() {
+        let bold = Style::new().bold();
+        let spans = restyle(vec![Span::raw("hello"), Span::raw(" world")], 3, 7, bold);
+        assert_eq!(text(std::slice::from_ref(&spans)), ["hello world"]);
+        let styled: Vec<_> = spans
+            .iter()
+            .filter(|s| s.style == bold)
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(styled, ["lo", " w"]);
     }
 
     #[test]
