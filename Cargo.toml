@@ -1,0 +1,24 @@
+[package]
+name = "lsmd"
+version = "0.1.0"
+edition = "2024"
+description = "Browse and read Markdown in the terminal, full width, with source side by side"
+repository = "https://github.com/sanford/lsmd"
+
+[dependencies]
+# Only to turn on use-dev-tty: without it, macOS can't read keys from the
+# terminal when the document comes in on stdin. Keep in step with ratatui's.
+crossterm = { version = "0.29.0", features = ["use-dev-tty"] }
+clap = { version = "4.6.7", features = ["derive"] }
+comrak = { version = "0.55.0", default-features = false }
+ignore = "0.4.33"
+nucleo-matcher = "0.3.1"
+ratatui = "0.30.2"
+syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
+terminal-colorsaurus = "1.0.3"
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
+unicode-segmentation = "1.13.3"
+unicode-width = "0.2.2"
+
+[dev-dependencies]
+insta = "1.48.0"

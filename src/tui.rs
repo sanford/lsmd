@@ -1,0 +1,702 @@
+//! The interactive browser and reader.
+
+use crate::doc::Doc;
+use crate::files::{self, Entry};
+use crate::theme::Theme;
+use crate::wrap;
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
+use ratatui::{DefaultTerminal, Frame};
+use std::collections::HashMap;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{Duration, SystemTime};
+
+/// What to show.
+pub enum Source {
+    /// A document read from standard input: no file list.
+    Text { title: String, md: String },
+    /// The Markdown files under `root`, optionally opening `open` straight away.
+    Browse {
+        root: PathBuf,
+        open: Option<PathBuf>,
+        all: bool,
+    },
+}
+
+pub fn run(source: Source, theme: &Theme, max_width: Option<usize>) -> io::Result<()> {
+    let mut app = App::new(source, theme, max_width);
+    let mut terminal = ratatui::init();
+    let result = app.run(&mut terminal);
+    ratatui::restore();
+    result
+}
+
+#[derive(PartialEq, Eq)]
+enum Focus {
+    List,
+    Reader,
+}
+
+/// A file that passes the filter, with the positions of the matched
+/// characters in its path.
+struct Shown {
+    file: usize,
+    hits: Vec<u32>,
+}
+
+struct App<'t> {
+    theme: &'t Theme,
+    max_width: Option<usize>,
+
+    /// Standard input's document, when there's no file list.
+    text: Option<(String, Doc)>,
+    root_label: String,
+    files: Vec<Entry>,
+    scan: Option<Receiver<Vec<Entry>>>,
+    by_time: bool,
+    filter: String,
+    typing: bool,
+    matcher: Matcher,
+    shown: Vec<Shown>,
+    list: ListState,
+    list_height: usize,
+    /// The user has moved the selection since the list last changed order.
+    moved: bool,
+    /// A file to select as soon as the scan finds it.
+    want: Option<PathBuf>,
+
+    focus: Focus,
+    /// The file open in the reader.
+    reading: Option<PathBuf>,
+    /// Keep the file list on screen while reading.
+    list_in_reader: bool,
+    help: bool,
+    docs: HashMap<PathBuf, Doc>,
+}
+
+impl<'t> App<'t> {
+    fn new(source: Source, theme: &'t Theme, max_width: Option<usize>) -> App<'t> {
+        let mut app = App {
+            theme,
+            max_width,
+            text: None,
+            root_label: String::new(),
+            files: Vec::new(),
+            scan: None,
+            by_time: false,
+            filter: String::new(),
+            typing: false,
+            matcher: Matcher::new(Config::DEFAULT.match_paths()),
+            shown: Vec::new(),
+            list: ListState::default(),
+            list_height: 0,
+            moved: false,
+            want: None,
+            focus: Focus::List,
+            reading: None,
+            list_in_reader: false,
+            help: false,
+            docs: HashMap::new(),
+        };
+        match source {
+            Source::Text { title, md } => {
+                app.text = Some((title, Doc::new(md)));
+                app.focus = Focus::Reader;
+            }
+            Source::Browse { root, open, all } => {
+                app.root_label = display_path(&root);
+                app.scan = Some(files::scan(&root, all));
+                if let Some(path) = open {
+                    app.focus = Focus::Reader;
+                    app.reading = Some(path.clone());
+                    app.want = Some(path);
+                }
+            }
+        }
+        app
+    }
+
+    fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        loop {
+            self.receive();
+            terminal.draw(|f| self.draw(f))?;
+            // While scanning, wake up now and then to show new files.
+            let wait = if self.scan.is_some() {
+                Duration::from_millis(50)
+            } else {
+                Duration::from_secs(60)
+            };
+            if !event::poll(wait)? {
+                continue;
+            }
+            let Event::Key(key) = event::read()? else {
+                continue; // Resizes redraw at the top of the loop.
+            };
+            if key.kind == KeyEventKind::Press && self.key(key) {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Takes in files the scan has found since last time.
+    fn receive(&mut self) {
+        let Some(rx) = &self.scan else { return };
+        let mut changed = false;
+        loop {
+            match rx.try_recv() {
+                Ok(batch) => {
+                    self.files.extend(batch);
+                    changed = true;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.scan = None;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        if changed {
+            self.refresh();
+        }
+    }
+
+    fn selected(&self) -> Option<&Entry> {
+        let shown = self.shown.get(self.list.selected()?)?;
+        Some(&self.files[shown.file])
+    }
+
+    /// Re-sorts and re-filters the list, keeping the same file selected.
+    ///
+    /// Until the user moves, the selection stays on the first file (or the
+    /// file named on the command line), however the list changes.
+    fn refresh(&mut self) {
+        let chosen = self.moved.then(|| self.selected().map(|e| e.path.clone())).flatten();
+        let keep = self.want.clone().or(chosen);
+        let mut order: Vec<usize> = (0..self.files.len()).collect();
+        let cmp = if self.by_time { files::by_modified } else { files::by_path };
+        order.sort_by(|&a, &b| cmp(&self.files[a], &self.files[b]));
+
+        if self.filter.is_empty() {
+            self.shown = order.into_iter().map(|file| Shown { file, hits: Vec::new() }).collect();
+        } else {
+            let pattern = Pattern::parse(&self.filter, CaseMatching::Smart, Normalization::Smart);
+            let mut buf = Vec::new();
+            let mut scored = Vec::new();
+            for file in order {
+                let mut hits = Vec::new();
+                let hay = Utf32Str::new(&self.files[file].rel, &mut buf);
+                if let Some(score) = pattern.indices(hay, &mut self.matcher, &mut hits) {
+                    hits.sort_unstable();
+                    hits.dedup();
+                    scored.push((score, Shown { file, hits }));
+                }
+            }
+            scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+            self.shown = scored.into_iter().map(|(_, s)| s).collect();
+        }
+
+        let index = keep.and_then(|p| self.shown.iter().position(|s| self.files[s.file].path == p));
+        if index.is_some() && self.want.take().is_some() {
+            // Found the file we were waiting for: from now on it counts as
+            // chosen, and later batches mustn't move off it.
+            self.moved = true;
+        }
+        self.list.select(index.or((!self.shown.is_empty()).then_some(0)));
+    }
+
+    /// The document for `path`, reloaded if the file has changed.
+    fn doc(&mut self, path: &Path) -> &mut Doc {
+        let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let stale = self.docs.get(path).is_none_or(|d| d.modified != modified);
+        if stale {
+            self.docs.insert(path.to_path_buf(), Doc::load(path));
+        }
+        self.docs.get_mut(path).unwrap()
+    }
+
+    /// The document on screen: the one being read, or else the selected one.
+    fn current(&mut self) -> Option<&mut Doc> {
+        if self.text.is_some() {
+            return self.text.as_mut().map(|(_, doc)| doc);
+        }
+        let path = match self.focus {
+            Focus::Reader => self.reading.clone(),
+            Focus::List => self.selected().map(|e| e.path.clone()),
+        }?;
+        Some(self.doc(&path))
+    }
+
+    fn select_by(&mut self, delta: isize) {
+        if self.shown.is_empty() {
+            return;
+        }
+        self.moved = true;
+        let i = self.list.selected().unwrap_or(0).saturating_add_signed(delta);
+        self.list.select(Some(i.min(self.shown.len() - 1)));
+    }
+
+    /// Handles a key. Returns true to quit.
+    fn key(&mut self, key: KeyEvent) -> bool {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('c') {
+            return true;
+        }
+        if self.help {
+            self.help = false;
+            return false;
+        }
+        if self.typing {
+            self.filter_key(key, ctrl);
+            return false;
+        }
+        match key.code {
+            KeyCode::Char('Q') => return true,
+            KeyCode::Char('?') => self.help = true,
+            _ if self.focus == Focus::List => return self.list_key(key, ctrl),
+            _ => return self.reader_key(key, ctrl),
+        }
+        false
+    }
+
+    fn filter_key(&mut self, key: KeyEvent, ctrl: bool) {
+        match key.code {
+            KeyCode::Down => return self.select_by(1),
+            KeyCode::Up => return self.select_by(-1),
+            KeyCode::Char('n') if ctrl => return self.select_by(1),
+            KeyCode::Char('p') if ctrl => return self.select_by(-1),
+            KeyCode::Enter => return self.typing = false,
+            KeyCode::Esc => {
+                self.typing = false;
+                self.filter.clear();
+            }
+            KeyCode::Backspace => {
+                if self.filter.pop().is_none() {
+                    self.typing = false;
+                }
+            }
+            KeyCode::Char(c) if !ctrl => self.filter.push(c),
+            _ => return,
+        }
+        // Jump to the best match.
+        self.moved = false;
+        self.refresh();
+    }
+
+    fn list_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
+        let page = self.list_height.max(1) as isize;
+        match key.code {
+            KeyCode::Char('q') => return true,
+            KeyCode::Char('d') if ctrl => self.select_by(page / 2),
+            KeyCode::Char('u') if ctrl => self.select_by(-page / 2),
+            KeyCode::Char('j') | KeyCode::Down => self.select_by(1),
+            KeyCode::Char('k') | KeyCode::Up => self.select_by(-1),
+            KeyCode::PageDown => self.select_by(page),
+            KeyCode::PageUp => self.select_by(-page),
+            KeyCode::Char('g') | KeyCode::Home => self.select_by(isize::MIN / 2),
+            KeyCode::Char('G') | KeyCode::End => self.select_by(isize::MAX / 2),
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(e) = self.selected() {
+                    self.reading = Some(e.path.clone());
+                    self.focus = Focus::Reader;
+                }
+            }
+            KeyCode::Char('/') => self.typing = true,
+            KeyCode::Esc if !self.filter.is_empty() => {
+                self.filter.clear();
+                self.refresh();
+            }
+            KeyCode::Char('m') => {
+                self.by_time = !self.by_time;
+                self.refresh();
+            }
+            // Page through the preview without opening it.
+            KeyCode::Char(' ') => {
+                if let Some(doc) = self.current() {
+                    doc.scroll_by(doc.page());
+                }
+            }
+            KeyCode::Char('b') => {
+                if let Some(doc) = self.current() {
+                    doc.scroll_by(-doc.page());
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn reader_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
+        let browsing = self.text.is_none();
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left
+            | KeyCode::Backspace => {
+                if !browsing {
+                    return true;
+                }
+                self.focus = Focus::List;
+                return false;
+            }
+            KeyCode::Char('\\') if browsing => {
+                self.list_in_reader = !self.list_in_reader;
+                return false;
+            }
+            _ => {}
+        }
+        let Some(doc) = self.current() else { return false };
+        let page = doc.page();
+        let half = (page / 2).max(1);
+        match key.code {
+            KeyCode::Char('d') if ctrl => doc.scroll_by(half),
+            KeyCode::Char('u') if ctrl => doc.scroll_by(-half),
+            KeyCode::Char('f') if ctrl => doc.scroll_by(page),
+            KeyCode::Char('b') if ctrl => doc.scroll_by(-page),
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Enter => doc.scroll_by(1),
+            KeyCode::Char('k') | KeyCode::Up => doc.scroll_by(-1),
+            KeyCode::Char('d') => doc.scroll_by(half),
+            KeyCode::Char('u') => doc.scroll_by(-half),
+            KeyCode::Char(' ') | KeyCode::PageDown => doc.scroll_by(page),
+            KeyCode::Char('b') | KeyCode::PageUp => doc.scroll_by(-page),
+            KeyCode::Char('g') | KeyCode::Home => doc.scroll_to_top(),
+            KeyCode::Char('G') | KeyCode::End => doc.scroll_to_bottom(),
+            _ => {}
+        }
+        false
+    }
+
+    fn draw(&mut self, f: &mut Frame) {
+        let [header, body, footer] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .areas(f.area());
+
+        self.draw_header(f, header);
+
+        let reader_only = self.text.is_some()
+            || (self.focus == Focus::Reader && !self.list_in_reader);
+        let narrow = body.width < 80;
+        if reader_only || (narrow && self.focus == Focus::Reader) {
+            // One column of margin on each side.
+            let area = Rect {
+                x: body.x + 1,
+                width: body.width.saturating_sub(2),
+                ..body
+            };
+            self.draw_doc(f, area);
+        } else if narrow {
+            self.draw_list(f, body);
+        } else {
+            let widest = self.shown.iter().map(|s| wrap::width(&self.files[s.file].rel)).max();
+            let want = widest.unwrap_or(0) + 11; // time column, gaps, borders
+            let cap = usize::from(body.width) * 2 / 5;
+            let list_w = want.clamp(24, cap.max(24)) as u16;
+            let [list_area, doc_area] =
+                Layout::horizontal([Constraint::Length(list_w), Constraint::Min(0)]).areas(body);
+            self.draw_list(f, list_area);
+            self.draw_preview(f, doc_area);
+        }
+
+        self.draw_footer(f, footer);
+        if self.help {
+            draw_help(f);
+        }
+    }
+
+    fn draw_header(&self, f: &mut Frame, area: Rect) {
+        let summary = if let Some((title, _)) = &self.text {
+            title.clone()
+        } else {
+            let n = self.files.len();
+            let mut s = format!("{n} file{} in {}", if n == 1 { "" } else { "s" }, self.root_label);
+            if self.scan.is_some() {
+                s.push_str(" …");
+            }
+            if self.focus == Focus::Reader
+                && let Some(path) = &self.reading
+            {
+                s = display_path(path);
+            }
+            s
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(vec![" lsmd ".bold(), Span::raw(" "), summary.dim()])),
+            area,
+        );
+    }
+
+    fn pane(&self, title: String, focused: bool) -> Block<'static> {
+        let block = Block::bordered().title(title);
+        if focused { block } else { block.border_style(Style::new().dim()) }
+    }
+
+    fn draw_list(&mut self, f: &mut Frame, area: Rect) {
+        let title = if self.filter.is_empty() {
+            format!(" Files ({}) ", self.files.len())
+        } else {
+            format!(" Files ({} of {}) ", self.shown.len(), self.files.len())
+        };
+        let block = self.pane(title, self.focus == Focus::List);
+        let inner = block.inner(area);
+        self.list_height = inner.height.into();
+        let now = SystemTime::now();
+        let width = usize::from(inner.width);
+        let items: Vec<ListItem> = self
+            .shown
+            .iter()
+            .map(|s| {
+                let e = &self.files[s.file];
+                ListItem::new(list_line(&e.rel, &s.hits, &files::ago(e.modified, now), width))
+            })
+            .collect();
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+        f.render_stateful_widget(list, area, &mut self.list);
+
+        if self.shown.is_empty() && self.scan.is_none() {
+            let msg = if self.files.is_empty() {
+                "No Markdown files here"
+            } else {
+                "Nothing matches"
+            };
+            f.render_widget(Paragraph::new(format!(" {msg}")).dim(), inner);
+        }
+    }
+
+    fn draw_preview(&mut self, f: &mut Frame, area: Rect) {
+        let path = match self.focus {
+            Focus::Reader => self.reading.clone(),
+            Focus::List => self.selected().map(|e| e.path.clone()),
+        };
+        let title = path
+            .as_deref()
+            .map(|p| format!(" {} ", self.rel_label(p)))
+            .unwrap_or_default();
+        let block = self
+            .pane(title, self.focus == Focus::Reader)
+            .padding(Padding::horizontal(1));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        self.draw_doc(f, inner);
+    }
+
+    fn draw_doc(&mut self, f: &mut Frame, area: Rect) {
+        let mut width = usize::from(area.width);
+        if let Some(max) = self.max_width {
+            width = width.min(max);
+        }
+        let theme = self.theme;
+        if let Some(doc) = self.current() {
+            doc.draw(f, area, width, theme);
+        }
+    }
+
+    /// `path` relative to the root when it's in the list.
+    fn rel_label(&self, path: &Path) -> String {
+        self.files
+            .iter()
+            .find(|e| e.path == path)
+            .map_or_else(|| display_path(path), |e| e.rel.clone())
+    }
+
+    fn draw_footer(&mut self, f: &mut Frame, area: Rect) {
+        if self.typing {
+            let line = Line::from(vec![" /".bold(), Span::raw(self.filter.clone()), "▏".slow_blink()]);
+            f.render_widget(Paragraph::new(line), area);
+            return;
+        }
+        let browsing = self.text.is_none();
+        let keys: Vec<(&str, &str)> = match self.focus {
+            Focus::List => {
+                let mut keys = vec![("↑↓", "move"), ("⏎", "read"), ("/", "filter")];
+                if !self.filter.is_empty() {
+                    keys.push(("esc", "clear filter"));
+                }
+                keys.push(("m", if self.by_time { "sort by name" } else { "sort by date" }));
+                keys.extend([("?", "help"), ("q", "quit")]);
+                keys
+            }
+            Focus::Reader if browsing => vec![
+                ("↑↓", "scroll"),
+                ("space", "page"),
+                ("\\", if self.list_in_reader { "hide list" } else { "show list" }),
+                ("?", "help"),
+                ("q", "back"),
+            ],
+            Focus::Reader => vec![("↑↓", "scroll"), ("space", "page"), ("?", "help"), ("q", "quit")],
+        };
+        let mut spans = vec![Span::raw(" ")];
+        for (k, what) in keys {
+            spans.push(k.bold());
+            spans.push(Span::raw(format!(" {what}  ")).dim());
+        }
+        let position = self.current().map(|d| d.position()).unwrap_or_default();
+        let [keys_area, pos_area] =
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(6)]).areas(area);
+        f.render_widget(Paragraph::new(Line::from(spans)), keys_area);
+        f.render_widget(
+            Paragraph::new(Line::from(format!("{position} ")).dim()).right_aligned(),
+            pos_area,
+        );
+    }
+}
+
+/// One row of the file list: the path, with its directory dimmed and filter
+/// matches highlighted, and the age right-aligned. Long paths lose their
+/// start, so the file name stays visible.
+fn list_line(rel: &str, hits: &[u32], age: &str, width: usize) -> Line<'static> {
+    let chars: Vec<char> = rel.chars().collect();
+    let dir_len = rel.rfind('/').map_or(0, |i| rel[..=i].chars().count());
+    let age_w = wrap::width(age);
+    let room = width.saturating_sub(age_w + 2).max(1);
+
+    // Drop characters from the front until the rest fits, leaving room for "…".
+    let mut skip = 0;
+    let mut path_w: usize = chars.iter().map(|&c| char_width(c)).sum();
+    if path_w > room {
+        while skip < chars.len() && path_w + 1 > room {
+            path_w -= char_width(chars[skip]);
+            skip += 1;
+        }
+        path_w += 1;
+    }
+
+    let hit = Style::new().yellow().bold();
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    if skip > 0 {
+        spans.push("…".dim());
+    }
+    for (i, &c) in chars.iter().enumerate().skip(skip) {
+        let style = if hits.binary_search(&(i as u32)).is_ok() {
+            hit
+        } else if i < dir_len {
+            Style::new().dim()
+        } else {
+            Style::new()
+        };
+        match spans.last_mut() {
+            Some(last) if last.style == style => last.content.to_mut().push(c),
+            _ => spans.push(Span::styled(c.to_string(), style)),
+        }
+    }
+    let gap = width.saturating_sub(1 + path_w + age_w);
+    if age_w > 0 && gap > 0 {
+        spans.push(Span::raw(" ".repeat(gap)));
+        spans.push(Span::raw(age.to_string()).dim());
+    }
+    Line::from(spans)
+}
+
+fn char_width(c: char) -> usize {
+    wrap::width(c.encode_utf8(&mut [0; 4]))
+}
+
+fn draw_help(f: &mut Frame) {
+    const KEYS: &[(&str, &str)] = &[
+        ("↑↓ j k", "Move / scroll"),
+        ("⏎ l →", "Read the selected file"),
+        ("esc q h ←", "Back to the list"),
+        ("space b", "Page down / up (the preview, in the list)"),
+        ("d u", "Half page down / up"),
+        ("g G", "Top / bottom"),
+        ("/", "Filter files (fuzzy)"),
+        ("m", "Sort by name or by date"),
+        ("\\", "Show or hide the list while reading"),
+        ("Q", "Quit from anywhere"),
+    ];
+    let key_width = KEYS.iter().map(|(k, _)| wrap::width(k)).max().unwrap_or(0);
+    let mut lines: Vec<Line> = KEYS
+        .iter()
+        .map(|(k, what)| {
+            let pad = key_width - wrap::width(k);
+            Line::from(vec![format!("{k}{}   ", " ".repeat(pad)).bold(), Span::raw(*what)])
+        })
+        .collect();
+    lines.push(Line::default());
+    lines.push(Line::from("Press any key to close").dim());
+    let area = f.area();
+    let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4).min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let rect = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" Keys ").padding(Padding::horizontal(1))),
+        rect,
+    );
+}
+
+/// `path` with the home directory shown as `~`.
+pub fn display_path(path: &Path) -> String {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    if let Some(home) = home
+        && let Ok(rest) = path.strip_prefix(&home)
+    {
+        return if rest.as_os_str().is_empty() {
+            "~".into()
+        } else {
+            format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display())
+        };
+    }
+    path.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn scanned<'t>(root: &Path, open: Option<PathBuf>, theme: &'t Theme) -> App<'t> {
+        let mut app = App::new(Source::Browse { root: root.to_path_buf(), open, all: false }, theme, None);
+        while app.scan.is_some() {
+            app.receive();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        app
+    }
+
+    #[test]
+    fn selects_the_file_named_on_the_command_line() {
+        let dir = std::env::temp_dir().join(format!("lsmd-test-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        for f in ["a.md", "b.md", "sub/c.md"] {
+            std::fs::write(dir.join(f), "# x\n").unwrap();
+        }
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let theme = Theme::plain();
+
+        let app = scanned(&dir, Some(dir.join("sub/c.md")), &theme);
+        assert_eq!(app.selected().unwrap().rel, "sub/c.md");
+
+        let app = scanned(&dir, None, &theme);
+        assert_eq!(app.selected().unwrap().rel, "a.md");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn list_line_right_aligns_age() {
+        assert_eq!(text(&list_line("docs/a.md", &[], "2h ago", 20)), " docs/a.md    2h ago");
+    }
+
+    #[test]
+    fn list_line_trims_long_paths_from_the_front() {
+        let line = list_line("very/long/directory/name.md", &[], "1d ago", 20);
+        assert_eq!(text(&line), " …ory/name.md 1d ago");
+    }
+}

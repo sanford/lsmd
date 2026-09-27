@@ -1,0 +1,81 @@
+---
+source: src/render.rs
+expression: "plain(md, 60)"
+---
+title: Everything
+tags: [markdown, test]
+
+Heading one
+═══════════
+
+Some emphasis, strong, struck, inline code, and a link
+(https://example.com) plus https://autolink.example. A
+footnote[1] too. This sentence is long enough that it has to
+wrap at least once at sixty columns.
+
+Heading two
+───────────
+
+### Heading three with code
+
+Line one
+hard break, then
+an html break.
+
+• Bullet one
+• Bullet two with a longer body that wraps onto another line
+  when narrow
+  ◦ Nested
+    ▪ Deeper
+☐ Todo
+☑ Done
+
+1. First
+
+2. Second
+
+   Loose paragraph in item two.
+
+3. Ten
+
+4. Eleven
+
+│ A quote
+│
+│ │ nested quote
+
+│ Warning
+│ Careful now.
+
+    fn main() {
+        println!("hello, a fairly long line that will need w
+    rapping somewhere");
+    }
+
+    indented code
+
+┌──────────────────────────┬────────┬───────┐
+│ Left                     │ Center │ Right │
+├──────────────────────────┼────────┼───────┤
+│ a                        │   b    │     c │
+│ a longer cell that wraps │ 日本語 │    42 │
+└──────────────────────────┴────────┴───────┘
+
+────────────────────────────────────────────────────────────
+
+Term
+    Its definition.
+
+shown html
+
+[image: Logo]
+[image: build] [image: license]
+
+Inline Ctrl and a
+break.
+
+[image: alt text] (img/logo.png)
+
+────────────────────
+
+[1] The footnote body.
