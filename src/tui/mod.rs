@@ -3,6 +3,7 @@
 mod links;
 mod nav;
 mod picker;
+mod search_all;
 
 use crate::doc::{Doc, Side, SourceSide, Split};
 use crate::files::{self, Entry};
@@ -120,6 +121,8 @@ struct App<'t> {
     flash: Option<String>,
     /// A file to open in the editor, at a line, once the key's handled.
     edit: Option<(PathBuf, usize)>,
+    /// A search of every file under way, and its query.
+    grep: Option<(Receiver<Vec<crate::grep::Hit>>, String)>,
     docs: HashMap<PathBuf, Doc>,
 }
 
@@ -158,6 +161,7 @@ impl<'t> App<'t> {
             history: Vec::new(),
             flash: None,
             edit: None,
+            grep: None,
             docs: HashMap::new(),
         };
         match source {
@@ -191,7 +195,7 @@ impl<'t> App<'t> {
             terminal.draw(|f| self.draw(f))?;
             // While scanning or indexing, wake up now and then to show
             // what's new.
-            let wait = if self.scan.is_some() || self.indexing.is_some() {
+            let wait = if self.scan.is_some() || self.indexing.is_some() || self.grep.is_some() {
                 Duration::from_millis(50)
             } else if self.watch.is_some() {
                 Duration::from_millis(250)
@@ -224,6 +228,7 @@ impl<'t> App<'t> {
     /// index when it's ready.
     fn receive(&mut self) {
         self.reload();
+        self.receive_grep();
         if let Some(rx) = &self.indexing
             && let Ok(index) = rx.try_recv()
         {
@@ -449,6 +454,11 @@ impl<'t> App<'t> {
             KeyCode::Char('e') if !ctrl => self.start_edit(),
             KeyCode::Char('y') if !ctrl => self.copy_code(),
             KeyCode::Char('Y') => self.copy_path(),
+            KeyCode::Char('s') if !ctrl => {
+                self.prompt = Some(nav::Prompt::Grep {
+                    query: String::new(),
+                });
+            }
             KeyCode::Tab => self.split = !self.split,
             KeyCode::BackTab if self.split => self.source_focus = !self.source_focus,
             KeyCode::Char('w') if ctrl && self.split => self.source_focus = !self.source_focus,
@@ -807,7 +817,13 @@ impl<'t> App<'t> {
             f.render_widget(Paragraph::new(line), area);
             return;
         }
-        let back = self.back_label();
+        // Esc clears a search before it goes back.
+        let searching = self.current().is_some_and(|d| d.search_status().is_some());
+        let back = if searching {
+            "clear search".into()
+        } else {
+            self.back_label()
+        };
         let tab = ("tab", if self.split { "hide source" } else { "source" });
         let mut reader = vec![
             ("↑↓", "scroll"),
@@ -828,7 +844,13 @@ impl<'t> App<'t> {
         }
         let keys: Vec<(&str, &str)> = match self.focus {
             Focus::List => {
-                let mut keys = vec![("↑↓", "move"), ("⏎", "read"), ("/", "filter"), tab];
+                let mut keys = vec![
+                    ("↑↓", "move"),
+                    ("⏎", "read"),
+                    ("/", "filter"),
+                    ("s", "search text"),
+                    tab,
+                ];
                 if !self.filter.is_empty() {
                     keys.push(("esc", "clear filter"));
                 }
@@ -935,6 +957,7 @@ fn draw_help(f: &mut Frame) {
         ("] [", "Next / previous heading"),
         ("o", "Outline: jump to a heading"),
         ("L", "Links: what this links to, and what links here"),
+        ("s", "Search the text of every file"),
         ("e", "Edit the file in $EDITOR, at this point"),
         ("y Y", "Copy the code block on screen / the file's path"),
         ("/ n N", "Search; next / previous match"),

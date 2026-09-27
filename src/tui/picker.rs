@@ -20,6 +20,8 @@ pub enum Target {
     Link(String),
     /// Open this Markdown file.
     File(PathBuf),
+    /// Open this file at a search match: source line and query.
+    Match(PathBuf, usize, String),
 }
 
 pub struct Row {

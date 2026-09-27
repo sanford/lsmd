@@ -3,6 +3,7 @@ mod clipboard;
 mod doc;
 mod editor;
 mod files;
+mod grep;
 mod highlight;
 mod html;
 mod index;

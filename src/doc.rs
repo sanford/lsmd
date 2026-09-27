@@ -91,6 +91,9 @@ pub struct Doc {
     pub hints: Vec<Hint>,
     /// A heading to jump to once the document is laid out.
     pending_anchor: Option<String>,
+    /// A search match to jump to once the document is laid out: its source
+    /// line and the query.
+    pending_match: Option<(usize, String)>,
     /// After a reload: the first line with text at or below the top of the
     /// screen, how far below the top it was, and its old index, to find
     /// the same place in the new text.
@@ -130,6 +133,7 @@ impl Doc {
             search: None,
             hints: Vec::new(),
             pending_anchor: None,
+            pending_match: None,
             keep: None,
             modified: None,
             lines: Vec::new(),
@@ -226,6 +230,9 @@ impl Doc {
         }
         if let Some(slug) = self.pending_anchor.take() {
             self.go_to_anchor(&slug);
+        }
+        if let Some((line, query)) = self.pending_match.take() {
+            self.go_to_match(line, &query);
         }
     }
 
@@ -557,6 +564,17 @@ impl Doc {
         } else if let Some(line) = self.anchor(slug) {
             self.jump_to(line);
         }
+    }
+
+    /// Searches for `query` from source line `line`, highlighting its
+    /// matches and jumping to the first there, now or once laid out.
+    pub fn go_to_match(&mut self, line: usize, query: &str) {
+        if self.width == 0 {
+            self.pending_match = Some((line, query.to_string()));
+            return;
+        }
+        let from = self.rendered_top_for(line as f64);
+        self.search(query, from);
     }
 
     pub fn top(&self) -> usize {

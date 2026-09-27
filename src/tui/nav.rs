@@ -21,6 +21,8 @@ pub enum Prompt {
     Pick(Picker),
     /// Confirming opening something outside lsmd.
     Open { target: String },
+    /// Typing a search of every file's text.
+    Grep { query: String },
 }
 
 /// A place to go back to: a document (`None` for standard input) and the
@@ -146,6 +148,19 @@ impl App<'_> {
                 Outcome::Stay => self.prompt = Some(Prompt::Pick(picker)),
                 Outcome::Close => {}
                 Outcome::Choose(target) => self.go(target),
+            },
+            Prompt::Grep { mut query } => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => self.start_grep(query),
+                KeyCode::Backspace => {
+                    query.pop();
+                    self.prompt = Some(Prompt::Grep { query });
+                }
+                KeyCode::Char(c) if !ctrl => {
+                    query.push(c);
+                    self.prompt = Some(Prompt::Grep { query });
+                }
+                _ => self.prompt = Some(Prompt::Grep { query }),
             },
             Prompt::Open { target } => {
                 if matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter) {
@@ -274,8 +289,10 @@ impl App<'_> {
 
     /// Goes where a picker row points.
     fn go(&mut self, target: Target) {
-        // Chosen from the list's preview: read that document.
-        if self.focus == Focus::List {
+        // Chosen from the list: read that document, with Esc going back to
+        // the list rather than to the document that was being previewed.
+        let from_list = self.focus == Focus::List;
+        if from_list {
             self.reading = self.selected().map(|e| e.path.clone());
             self.focus = Focus::Reader;
         }
@@ -289,6 +306,13 @@ impl App<'_> {
             }
             Target::Link(url) => self.follow(&url),
             Target::File(path) => self.open_path(path, None),
+            Target::Match(path, line, query) => {
+                self.open_path(path.clone(), None);
+                self.doc(&path).go_to_match(line, &query);
+            }
+        }
+        if from_list {
+            self.history.clear();
         }
     }
 
@@ -328,6 +352,12 @@ impl App<'_> {
                 "  esc cancels".dim(),
             ]),
             Prompt::Pick(_) => Line::from(" ↑↓ choose  ⏎ go  esc close".dim()),
+            Prompt::Grep { query } => Line::from(vec![
+                " Search all files: ".bold(),
+                Span::raw(query.clone()),
+                "▏".slow_blink(),
+                "  ⏎ search  esc cancel".dim(),
+            ]),
             Prompt::Open { target } => Line::from(vec![
                 " Open ".bold(),
                 Span::raw(target.clone()),
