@@ -4,9 +4,9 @@
 
 `lsmd` shows every Markdown file in your project on one screen, so you can browse and read them quickly. It knows which documents link to each other, in both directions, so you can jump to related documents instantly. It searches the document you're reading as you type, and every file in the project in a moment. It makes it easy to find your way around everything your team and your AI agents write.
 
-![lsmd running through 60 of a project's 333 Markdown files, each one rendered beside the list as it's selected](docs/images/browse.gif)
+![lsmd skimming a project's 333 Markdown files, each rendered as it's selected; filtering to one and opening it; scrolling; jumping between sections with the outline; and searching the document](docs/images/browse.gif)
 
-That's what you see when you run `lsmd` in a project: every Markdown file, with how long ago it changed, and the selected one rendered beside the list. Hold `↓` and each document renders as fast as your keyboard repeats, so you can skim a whole directory in seconds. `Enter` opens one full screen.
+That's `lsmd` in a project with 333 Markdown files. Every file is listed with how long ago it changed, and holding `↓` renders each one beside the list as fast as your keyboard repeats. `/design-arch` narrows the list to one file and `Enter` opens it. `o` brings up its outline, where the text follows each heading as you move through them. Then `/golden` searches the document, and `n` goes to the next match.
 
 ## Why
 
