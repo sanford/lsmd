@@ -206,6 +206,76 @@ fn width_of(s: &str) -> usize {
     width(s)
 }
 
+/// Wraps one line of source text to `width` columns, keeping its spacing
+/// exactly. Breaks after the last space that fits, or mid-word if a word
+/// won't fit on a line of its own.
+pub fn wrap_source(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'static>>> {
+    let width = width.max(1);
+    if spans_width(&spans) <= width {
+        return vec![spans];
+    }
+    let cells: Vec<(&str, Style, usize)> = spans
+        .iter()
+        .flat_map(|s| s.content.graphemes(true).map(move |g| (g, s.style, width_of(g))))
+        .collect();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while start < cells.len() {
+        let mut end = start;
+        let mut w = 0;
+        while end < cells.len() && w + cells[end].2 <= width {
+            w += cells[end].2;
+            end += 1;
+        }
+        if end < cells.len() {
+            // Back up to just after the last space, if there's one.
+            if let Some(space) = (start + 1..end).rev().find(|&i| cells[i - 1].0 == " ") {
+                end = space;
+            }
+            end = end.max(start + 1);
+        }
+        let line = cells[start..end]
+            .iter()
+            .map(|&(g, style, _)| Span::styled(g.to_string(), style))
+            .collect();
+        lines.push(merge(line));
+        start = end;
+    }
+    lines
+}
+
+/// The part of a line from column `start`, at most `len` columns wide. A
+/// wide character cut in half by either edge becomes spaces.
+pub fn slice(spans: &[Span<'static>], start: usize, len: usize) -> Vec<Span<'static>> {
+    let end = start + len;
+    let mut out = Vec::new();
+    let mut col = 0;
+    for span in spans {
+        let mut text = String::new();
+        for g in span.content.graphemes(true) {
+            let w = width_of(g);
+            let (from, to) = (col, col + w);
+            col = to;
+            if to <= start || from >= end {
+                continue;
+            }
+            if from < start || to > end {
+                let visible = to.min(end) - from.max(start);
+                text.extend(std::iter::repeat_n(' ', visible));
+            } else {
+                text.push_str(g);
+            }
+        }
+        if !text.is_empty() {
+            out.push(Span::styled(text, span.style));
+        }
+        if col >= end {
+            break;
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +338,23 @@ mod tests {
             Piece::Text("b".into(), Style::default()),
         ];
         assert_eq!(text(&wrap(&pieces, 10)), ["a", "b"]);
+    }
+
+    #[test]
+    fn wrap_source_breaks_after_spaces() {
+        let lines = wrap_source(vec![Span::raw("  indented words here")], 12);
+        assert_eq!(text(&lines), ["  indented ", "words here"]);
+        let lines = wrap_source(vec![Span::raw("abcdefgh")], 3);
+        assert_eq!(text(&lines), ["abc", "def", "gh"]);
+    }
+
+    #[test]
+    fn slices_columns() {
+        let spans = vec![Span::raw("ab"), Span::raw("日本")];
+        assert_eq!(text(&[slice(&spans, 1, 3)]), ["b日"]);
+        assert_eq!(text(&[slice(&spans, 3, 3)]), [" 本"]);
+        assert_eq!(text(&[slice(&spans, 3, 2)]), ["  "]);
+        assert_eq!(text(&[slice(&spans, 2, 3)]), ["日 "]);
     }
 
     #[test]

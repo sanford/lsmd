@@ -15,6 +15,9 @@ pub struct RLine {
     /// The 1-based source lines (first, last) of the top-level block this
     /// line was rendered from. `None` for blank lines between blocks.
     pub src: Option<(usize, usize)>,
+    /// For unwrapped code: the column where the code starts, after any
+    /// quote bars or list indents. Everything from there scrolls sideways.
+    pub scroll_from: Option<usize>,
 }
 
 impl RLine {
@@ -41,13 +44,15 @@ fn options() -> Options<'static> {
 }
 
 /// Renders `md` into lines at most `width` columns wide (except where the
-/// width is too small for a table's borders or a list's indent).
-pub fn render(md: &str, width: usize, theme: &Theme) -> Vec<RLine> {
+/// width is too small for a table's borders or a list's indent). Without
+/// `wrap_code`, long lines of code run past `width`, to be scrolled to.
+pub fn render(md: &str, width: usize, theme: &Theme, wrap_code: bool) -> Vec<RLine> {
     let arena = Arena::new();
     let root = parse_document(&arena, md, &options());
     let mut r = Renderer {
         theme,
         width: width.max(1),
+        wrap_code,
         out: Vec::new(),
         prefix: Vec::new(),
         gap: false,
@@ -74,6 +79,7 @@ struct Prefix {
 struct Renderer<'t> {
     theme: &'t Theme,
     width: usize,
+    wrap_code: bool,
     out: Vec<RLine>,
     prefix: Vec<Prefix>,
     /// A blank line is due before the next line.
@@ -116,6 +122,7 @@ impl Renderer<'_> {
             self.out.push(RLine {
                 spans: blank,
                 src: None,
+                scroll_from: None,
             });
         }
     }
@@ -131,7 +138,17 @@ impl Renderer<'_> {
         self.out.push(RLine {
             spans: line,
             src: self.src,
+            scroll_from: None,
         });
+    }
+
+    /// Emits a line of unwrapped code, which scrolls sideways.
+    fn emit_code(&mut self, spans: Vec<Span<'static>>) {
+        let prefix_w: usize = self.prefix.iter().map(|p| wrap::spans_width(&p.rest)).sum();
+        self.emit(spans);
+        if let Some(line) = self.out.last_mut() {
+            line.scroll_from = Some(prefix_w);
+        }
     }
 
     fn para(&mut self, pieces: &[Piece]) {
@@ -279,36 +296,45 @@ impl Renderer<'_> {
         let lang = highlight::language(info);
         let theme = self.theme;
         let base = theme.code_block();
+        let lines = highlight::highlight(literal, lang, theme, base);
+        // Unwrapped, every line is one chunk, however long.
+        let wrap_code = self.wrap_code;
+        let chunks = |line: Vec<Span<'static>>, width: usize| {
+            if wrap_code { wrap::hard_wrap(line, width) } else { vec![line] }
+        };
         if !theme.color {
             // No background to set the code apart, so indent it instead.
             let avail = self.avail().saturating_sub(4);
-            for line in highlight::highlight(literal, lang, theme, base) {
-                for chunk in wrap::hard_wrap(line, avail) {
+            for line in lines {
+                for chunk in chunks(line, avail) {
                     let mut spans = vec![Span::raw("    ")];
                     spans.extend(chunk);
                     trim_end(&mut spans);
-                    self.emit(spans);
+                    self.emit_code(spans);
                 }
             }
             return;
         }
-        // A block of background color the full width, with a column of
-        // padding on each side and the language in the top right corner.
+        // A block of background color the full width (or as wide as the
+        // widest line, unwrapped), with a column of padding on each side and
+        // the language in the top right corner.
         let inner = self.avail().saturating_sub(2).max(1);
+        let widest = lines.iter().map(|l| wrap::spans_width(l)).max().unwrap_or(0);
+        let block_w = if wrap_code { inner } else { inner.max(widest) };
         let mut first = true;
-        for line in highlight::highlight(literal, lang, theme, base) {
-            for chunk in wrap::hard_wrap(line, inner) {
-                let mut pad = inner.saturating_sub(wrap::spans_width(&chunk)) + 1;
+        for line in lines {
+            for chunk in chunks(line, inner) {
+                let mut pad = block_w.saturating_sub(wrap::spans_width(&chunk)) + 1;
                 let mut spans = vec![Span::styled(" ", base)];
                 spans.extend(chunk);
                 let label_w = wrap::width(lang);
-                if first && label_w > 0 && pad > label_w + 2 {
+                if first && label_w > 0 && pad > label_w + 2 && block_w == inner {
                     spans.push(Span::styled(" ".repeat(pad - label_w - 1), base));
                     spans.push(Span::styled(lang.to_string(), base.patch(theme.dim())));
                     pad = 1;
                 }
                 spans.push(Span::styled(" ".repeat(pad), base));
-                self.emit(spans);
+                self.emit_code(spans);
                 first = false;
             }
         }
@@ -587,7 +613,7 @@ mod tests {
     use super::*;
 
     fn plain(md: &str, width: usize) -> String {
-        render(md, width, &Theme::plain())
+        render(md, width, &Theme::plain(), true)
             .iter()
             .map(|l| l.text() + "\n")
             .collect()
@@ -604,12 +630,21 @@ mod tests {
 
     #[test]
     fn records_source_lines() {
-        let lines = render("# Title\n\npara one\nstill one\n\npara two\n", 80, &Theme::plain());
+        let lines = render("# Title\n\npara one\nstill one\n\npara two\n", 80, &Theme::plain(), true);
         let src: Vec<_> = lines.iter().map(|l| l.src).collect();
         assert_eq!(
             src,
             [Some((1, 1)), Some((1, 1)), None, Some((3, 4)), None, Some((6, 6))]
         );
+    }
+
+    #[test]
+    fn leaves_code_unwrapped_for_scrolling() {
+        let md = "> ```\n> a long line of code\n> ```\n";
+        let lines = render(md, 12, &Theme::plain(), false);
+        let code = lines.iter().find(|l| l.text().contains("long")).unwrap();
+        assert_eq!(code.text(), "│     a long line of code");
+        assert_eq!(code.scroll_from, Some(2));
     }
 
     #[test]

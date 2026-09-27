@@ -1,6 +1,6 @@
 //! The interactive browser and reader.
 
-use crate::doc::Doc;
+use crate::doc::{Doc, Side};
 use crate::files::{self, Entry};
 use crate::theme::Theme;
 use crate::wrap;
@@ -30,8 +30,10 @@ pub enum Source {
     },
 }
 
-pub fn run(source: Source, theme: &Theme, max_width: Option<usize>) -> io::Result<()> {
+/// With `split`, documents open with their source alongside.
+pub fn run(source: Source, theme: &Theme, max_width: Option<usize>, split: bool) -> io::Result<()> {
     let mut app = App::new(source, theme, max_width);
+    app.split = split;
     let mut terminal = ratatui::init();
     let result = app.run(&mut terminal);
     ratatui::restore();
@@ -78,6 +80,12 @@ struct App<'t> {
     /// Keep the file list on screen while reading.
     list_in_reader: bool,
     help: bool,
+    /// Show the source beside the rendered document.
+    split: bool,
+    /// In the split view, the source side has the keyboard.
+    source_focus: bool,
+    /// The source side's share of the split, in percent.
+    ratio: u16,
     docs: HashMap<PathBuf, Doc>,
 }
 
@@ -103,6 +111,9 @@ impl<'t> App<'t> {
             reading: None,
             list_in_reader: false,
             help: false,
+            split: false,
+            source_focus: false,
+            ratio: 50,
             docs: HashMap::new(),
         };
         match source {
@@ -243,6 +254,24 @@ impl<'t> App<'t> {
         self.list.select(Some(i.min(self.shown.len() - 1)));
     }
 
+    /// The side of the document that scrolls.
+    fn side(&self) -> Side {
+        if self.split && self.source_focus { Side::Source } else { Side::Rendered }
+    }
+
+    /// Keys that work the same in the list and the reader.
+    fn view_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
+        match key.code {
+            KeyCode::Tab => self.split = !self.split,
+            KeyCode::BackTab if self.split => self.source_focus = !self.source_focus,
+            KeyCode::Char('w') if ctrl && self.split => self.source_focus = !self.source_focus,
+            KeyCode::Char('<') if self.split => self.ratio = self.ratio.saturating_sub(5).max(20),
+            KeyCode::Char('>') if self.split => self.ratio = (self.ratio + 5).min(80),
+            _ => return false,
+        }
+        true
+    }
+
     /// Handles a key. Returns true to quit.
     fn key(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -260,6 +289,7 @@ impl<'t> App<'t> {
         match key.code {
             KeyCode::Char('Q') => return true,
             KeyCode::Char('?') => self.help = true,
+            _ if self.view_key(key, ctrl) => {}
             _ if self.focus == Focus::List => return self.list_key(key, ctrl),
             _ => return self.reader_key(key, ctrl),
         }
@@ -319,13 +349,15 @@ impl<'t> App<'t> {
             }
             // Page through the preview without opening it.
             KeyCode::Char(' ') => {
+                let side = self.side();
                 if let Some(doc) = self.current() {
-                    doc.scroll_by(doc.page());
+                    doc.scroll_by(doc.page(), side);
                 }
             }
             KeyCode::Char('b') => {
+                let side = self.side();
                 if let Some(doc) = self.current() {
-                    doc.scroll_by(-doc.page());
+                    doc.scroll_by(-doc.page(), side);
                 }
             }
             _ => {}
@@ -336,8 +368,7 @@ impl<'t> App<'t> {
     fn reader_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
         let browsing = self.text.is_none();
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left
-            | KeyCode::Backspace => {
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Backspace => {
                 if !browsing {
                     return true;
                 }
@@ -350,22 +381,26 @@ impl<'t> App<'t> {
             }
             _ => {}
         }
+        let side = self.side();
         let Some(doc) = self.current() else { return false };
         let page = doc.page();
         let half = (page / 2).max(1);
         match key.code {
-            KeyCode::Char('d') if ctrl => doc.scroll_by(half),
-            KeyCode::Char('u') if ctrl => doc.scroll_by(-half),
-            KeyCode::Char('f') if ctrl => doc.scroll_by(page),
-            KeyCode::Char('b') if ctrl => doc.scroll_by(-page),
-            KeyCode::Char('j') | KeyCode::Down | KeyCode::Enter => doc.scroll_by(1),
-            KeyCode::Char('k') | KeyCode::Up => doc.scroll_by(-1),
-            KeyCode::Char('d') => doc.scroll_by(half),
-            KeyCode::Char('u') => doc.scroll_by(-half),
-            KeyCode::Char(' ') | KeyCode::PageDown => doc.scroll_by(page),
-            KeyCode::Char('b') | KeyCode::PageUp => doc.scroll_by(-page),
-            KeyCode::Char('g') | KeyCode::Home => doc.scroll_to_top(),
-            KeyCode::Char('G') | KeyCode::End => doc.scroll_to_bottom(),
+            KeyCode::Char('d') if ctrl => doc.scroll_by(half, side),
+            KeyCode::Char('u') if ctrl => doc.scroll_by(-half, side),
+            KeyCode::Char('f') if ctrl => doc.scroll_by(page, side),
+            KeyCode::Char('b') if ctrl => doc.scroll_by(-page, side),
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Enter => doc.scroll_by(1, side),
+            KeyCode::Char('k') | KeyCode::Up => doc.scroll_by(-1, side),
+            KeyCode::Char('d') => doc.scroll_by(half, side),
+            KeyCode::Char('u') => doc.scroll_by(-half, side),
+            KeyCode::Char(' ') | KeyCode::PageDown => doc.scroll_by(page, side),
+            KeyCode::Char('b') | KeyCode::PageUp => doc.scroll_by(-page, side),
+            KeyCode::Char('g') | KeyCode::Home => doc.scroll_to_top(side),
+            KeyCode::Char('G') | KeyCode::End => doc.scroll_to_bottom(side),
+            KeyCode::Char('h') | KeyCode::Left => doc.scroll_sideways(-8),
+            KeyCode::Char('l') | KeyCode::Right => doc.scroll_sideways(8),
+            KeyCode::Char('0') => doc.scroll_sideways(isize::MIN / 2),
             _ => {}
         }
         false
@@ -495,8 +530,13 @@ impl<'t> App<'t> {
             width = width.min(max);
         }
         let theme = self.theme;
+        let (split, ratio, side, max) = (self.split, self.ratio, self.side(), self.max_width);
         if let Some(doc) = self.current() {
-            doc.draw(f, area, width, theme);
+            if split {
+                doc.draw_split(f, area, ratio, side, max, theme);
+            } else {
+                doc.draw(f, area, width, theme);
+            }
         }
     }
 
@@ -515,9 +555,14 @@ impl<'t> App<'t> {
             return;
         }
         let browsing = self.text.is_none();
+        let tab = ("tab", if self.split { "hide source" } else { "source" });
+        let mut reader = vec![("↑↓", "scroll"), ("←→", "sideways"), tab];
+        if self.split {
+            reader.push(("^w", if self.source_focus { "to rendered" } else { "to source" }));
+        }
         let keys: Vec<(&str, &str)> = match self.focus {
             Focus::List => {
-                let mut keys = vec![("↑↓", "move"), ("⏎", "read"), ("/", "filter")];
+                let mut keys = vec![("↑↓", "move"), ("⏎", "read"), ("/", "filter"), tab];
                 if !self.filter.is_empty() {
                     keys.push(("esc", "clear filter"));
                 }
@@ -525,14 +570,15 @@ impl<'t> App<'t> {
                 keys.extend([("?", "help"), ("q", "quit")]);
                 keys
             }
-            Focus::Reader if browsing => vec![
-                ("↑↓", "scroll"),
-                ("space", "page"),
-                ("\\", if self.list_in_reader { "hide list" } else { "show list" }),
-                ("?", "help"),
-                ("q", "back"),
-            ],
-            Focus::Reader => vec![("↑↓", "scroll"), ("space", "page"), ("?", "help"), ("q", "quit")],
+            Focus::Reader if browsing => {
+                reader.push(("\\", if self.list_in_reader { "hide list" } else { "show list" }));
+                reader.extend([("?", "help"), ("q", "back")]);
+                reader
+            }
+            Focus::Reader => {
+                reader.extend([("?", "help"), ("q", "quit")]);
+                reader
+            }
         };
         let mut spans = vec![Span::raw(" ")];
         for (k, what) in keys {
@@ -604,13 +650,17 @@ fn draw_help(f: &mut Frame) {
     const KEYS: &[(&str, &str)] = &[
         ("↑↓ j k", "Move / scroll"),
         ("⏎ l →", "Read the selected file"),
-        ("esc q h ←", "Back to the list"),
+        ("esc q", "Back to the list"),
+        ("← → h l", "Scroll long code lines sideways (0: back)"),
         ("space b", "Page down / up (the preview, in the list)"),
         ("d u", "Half page down / up"),
         ("g G", "Top / bottom"),
         ("/", "Filter files (fuzzy)"),
         ("m", "Sort by name or by date"),
         ("\\", "Show or hide the list while reading"),
+        ("tab", "Show the source beside the rendered text"),
+        ("^w ⇧tab", "Switch between source and rendered"),
+        ("< >", "Make the source narrower / wider"),
         ("Q", "Quit from anywhere"),
     ];
     let key_width = KEYS.iter().map(|(k, _)| wrap::width(k)).max().unwrap_or(0);

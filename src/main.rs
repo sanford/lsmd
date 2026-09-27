@@ -33,6 +33,10 @@ struct Args {
     #[arg(short, long, value_name = "N")]
     width: Option<usize>,
 
+    /// Start with the source shown beside the rendered text
+    #[arg(short, long)]
+    source: bool,
+
     /// Print without colors or styles
     #[arg(short, long)]
     plain: bool,
@@ -62,14 +66,14 @@ fn run(args: Args) -> io::Result<()> {
 
     let source = source(args.path.as_deref(), args.all)?;
     if interactive {
-        return tui::run(source, &theme, width);
+        return tui::run(source, &theme, width, args.source);
     }
     let md = match source {
         tui::Source::Text { md, .. } => md,
         tui::Source::Browse { open: Some(path), .. } => read(&path)?,
         tui::Source::Browse { root, open: None, all } => return list_files(&root, all),
     };
-    let lines = render::render(&md, width.unwrap_or_else(terminal_width), &theme);
+    let lines = render::render(&md, width.unwrap_or_else(terminal_width), &theme, true);
     ansi::print(&lines, &mut io::stdout().lock())
 }
 
