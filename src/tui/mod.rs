@@ -576,6 +576,7 @@ impl<'t> App<'t> {
 
     /// Handles a key. Returns true to quit.
     fn key(&mut self, key: KeyEvent) -> bool {
+        let key = emacs(key);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('c') {
             return true;
@@ -612,8 +613,6 @@ impl<'t> App<'t> {
         match key.code {
             KeyCode::Down => return self.select_by(1),
             KeyCode::Up => return self.select_by(-1),
-            KeyCode::Char('n') if ctrl => return self.select_by(1),
-            KeyCode::Char('p') if ctrl => return self.select_by(-1),
             KeyCode::Enter => return self.typing = false,
             KeyCode::Esc => {
                 self.typing = false;
@@ -1145,6 +1144,10 @@ fn draw_help(f: &mut Frame) {
         ("/ n N", "Search; next / previous match"),
         ("f", "Follow a link (type the letters shown on it)"),
         ("⇧↓ ⇧↑ J K", "Page down / up"),
+        (
+            "^n ^p ^v M-v",
+            "Emacs: down / up, page down / up (M-< M->: ends, ^g: esc)",
+        ),
         ("space b", "Page down / up (the preview, in the list)"),
         ("d u", "Half page down / up"),
         ("g G", "Top / bottom"),
@@ -1217,6 +1220,25 @@ fn section_trail(section: &[String], room: usize) -> Option<String> {
     Some(trail)
 }
 
+/// Emacs's movement keys, as the keys they stand for, so they work
+/// wherever those do: C-n C-p for ↓ ↑, C-v M-v for a page, M-< M-> for
+/// the ends, and C-g for Esc.
+fn emacs(key: KeyEvent) -> KeyEvent {
+    let ctrl = key.modifiers == KeyModifiers::CONTROL;
+    let alt = key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::ALT;
+    let code = match key.code {
+        KeyCode::Char('n') if ctrl => KeyCode::Down,
+        KeyCode::Char('p') if ctrl => KeyCode::Up,
+        KeyCode::Char('v') if ctrl => KeyCode::PageDown,
+        KeyCode::Char('v') if alt => KeyCode::PageUp,
+        KeyCode::Char('<') if alt => KeyCode::Home,
+        KeyCode::Char('>') if alt => KeyCode::End,
+        KeyCode::Char('g') if ctrl => KeyCode::Esc,
+        _ => return key,
+    };
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
 /// `path` with the home directory shown as `~`.
 pub fn display_path(path: &Path) -> String {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
@@ -1287,6 +1309,24 @@ mod tests {
         assert_eq!(section_trail(&s, 10).unwrap(), "… › On Wi…");
         assert_eq!(section_trail(&s, 5), None);
         assert_eq!(section_trail(&[], 80), None);
+    }
+
+    #[test]
+    fn emacs_keys_stand_for_the_usual_ones() {
+        let k = |c, m| emacs(KeyEvent::new(KeyCode::Char(c), m)).code;
+        assert_eq!(k('n', KeyModifiers::CONTROL), KeyCode::Down);
+        assert_eq!(k('p', KeyModifiers::CONTROL), KeyCode::Up);
+        assert_eq!(k('v', KeyModifiers::CONTROL), KeyCode::PageDown);
+        assert_eq!(k('v', KeyModifiers::ALT), KeyCode::PageUp);
+        assert_eq!(
+            k('<', KeyModifiers::ALT | KeyModifiers::SHIFT),
+            KeyCode::Home
+        );
+        assert_eq!(k('>', KeyModifiers::ALT), KeyCode::End);
+        assert_eq!(k('g', KeyModifiers::CONTROL), KeyCode::Esc);
+        // Plain letters, and < > without Alt (the divider), are left alone.
+        assert_eq!(k('n', KeyModifiers::NONE), KeyCode::Char('n'));
+        assert_eq!(k('<', KeyModifiers::SHIFT), KeyCode::Char('<'));
     }
 
     #[test]

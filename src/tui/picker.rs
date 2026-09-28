@@ -146,8 +146,6 @@ impl Picker {
             KeyCode::Up => return self.move_to(at - 1, -1),
             KeyCode::PageDown => return self.move_to(at + page, 1),
             KeyCode::PageUp => return self.move_to(at - page, -1),
-            KeyCode::Char('n') if ctrl => return self.move_to(at + 1, 1),
-            KeyCode::Char('p') if ctrl => return self.move_to(at - 1, -1),
             KeyCode::Char('c') if ctrl => return Outcome::Quit,
             _ => {}
         }
