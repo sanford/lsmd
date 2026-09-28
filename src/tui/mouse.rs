@@ -48,25 +48,10 @@ impl App<'_> {
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let delta = if down == Some(true) { WHEEL } else { -WHEEL };
-                let sideways = m.modifiers.contains(KeyModifiers::SHIFT);
                 if let Some(doc) = self.current()
                     && let Some(side) = doc.side_at(x, y)
                 {
-                    if sideways {
-                        doc.scroll_sideways(delta * 2);
-                    } else {
-                        doc.scroll_by(delta, side);
-                    }
-                }
-            }
-            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
-                let delta = if m.kind == MouseEventKind::ScrollRight {
-                    6
-                } else {
-                    -6
-                };
-                if let Some(doc) = self.current() {
-                    doc.scroll_sideways(delta);
+                    doc.scroll_by(delta, side);
                 }
             }
             MouseEventKind::Down(MouseButton::Left) if over_list => self.click_list(y),

@@ -49,7 +49,7 @@ an html break.
 
     fn main() {
         println!("hello, a fairly long line that will need w
-    rapping somewhere");
+  ↪ rapping somewhere");
     }
 
     indented code

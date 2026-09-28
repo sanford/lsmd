@@ -17,9 +17,6 @@ pub struct RLine {
     /// The 1-based source lines (first, last) of the top-level block this
     /// line was rendered from. `None` for blank lines between blocks.
     pub src: Option<(usize, usize)>,
-    /// For unwrapped code: the column where the code starts, after any
-    /// quote bars or list indents. Everything from there scrolls sideways.
-    pub scroll_from: Option<usize>,
     /// The links on this line, by column. Their ids index [`Rendered::links`].
     pub links: Vec<LinkSpan>,
 }
@@ -77,15 +74,13 @@ pub(crate) fn options() -> Options<'static> {
 }
 
 /// Renders `md` into lines at most `width` columns wide (except where the
-/// width is too small for a table's borders or a list's indent). Without
-/// `wrap_code`, long lines of code run past `width`, to be scrolled to.
+/// width is too small for a table's borders or a list's indent).
 /// Relative links are checked against the files in `base`, the document's
 /// directory.
 pub fn render(
     md: &str,
     width: usize,
     theme: &Theme,
-    wrap_code: bool,
     base: Option<&Path>,
     site: Option<&Path>,
 ) -> Rendered {
@@ -94,7 +89,6 @@ pub fn render(
     let mut r = Renderer {
         theme,
         width: width.max(1),
-        wrap_code,
         out: Vec::new(),
         prefix: Vec::new(),
         gap: false,
@@ -134,7 +128,6 @@ struct Prefix {
 struct Renderer<'t> {
     theme: &'t Theme,
     width: usize,
-    wrap_code: bool,
     out: Vec<RLine>,
     prefix: Vec<Prefix>,
     /// A blank line is due before the next line.
@@ -191,7 +184,6 @@ impl Renderer<'_> {
             self.out.push(RLine {
                 spans: blank,
                 src: None,
-                scroll_from: None,
                 links: Vec::new(),
             });
         }
@@ -219,18 +211,8 @@ impl Renderer<'_> {
         self.out.push(RLine {
             spans: line,
             src: self.src,
-            scroll_from: None,
             links: Vec::new(),
         });
-    }
-
-    /// Emits a line of unwrapped code, which scrolls sideways.
-    fn emit_code(&mut self, spans: Vec<Span<'static>>) {
-        let prefix_w = self.prefix_width();
-        self.emit(spans);
-        if let Some(line) = self.out.last_mut() {
-            line.scroll_from = Some(prefix_w);
-        }
     }
 
     fn prefix_width(&self) -> usize {
@@ -445,52 +427,48 @@ impl Renderer<'_> {
         let theme = self.theme;
         let base = theme.code_block();
         let lines = highlight::highlight(literal, lang, theme, base);
-        // Unwrapped, every line is one chunk, however long.
-        let wrap_code = self.wrap_code;
-        let chunks = |line: Vec<Span<'static>>, width: usize| {
-            if wrap_code {
-                wrap::hard_wrap(line, width)
-            } else {
-                vec![line]
-            }
-        };
+        // Where a long line wraps, its continuations start with a mark, so
+        // they can't be taken for lines of their own.
+        const MORE: &str = "↪";
         if !theme.color {
             // No background to set the code apart, so indent it instead.
             let avail = self.avail().saturating_sub(4);
             for line in lines {
-                for chunk in chunks(line, avail) {
-                    let mut spans = vec![Span::raw("    ")];
+                for (i, chunk) in wrap::hard_wrap(line, avail).into_iter().enumerate() {
+                    let mut spans = vec![Span::raw(if i == 0 {
+                        "    ".into()
+                    } else {
+                        format!("  {MORE} ")
+                    })];
                     spans.extend(chunk);
                     trim_end(&mut spans);
-                    self.emit_code(spans);
+                    self.emit(spans);
                 }
             }
             return;
         }
-        // A block of background color the full width (or as wide as the
-        // widest line, unwrapped), with a column of padding on each side and
-        // the language in the top right corner.
+        // A block of background color the full width, with a column of
+        // padding on each side (where continuations get their mark) and the
+        // language in the top right corner.
         let inner = self.avail().saturating_sub(2).max(1);
-        let widest = lines
-            .iter()
-            .map(|l| wrap::spans_width(l))
-            .max()
-            .unwrap_or(0);
-        let block_w = if wrap_code { inner } else { inner.max(widest) };
         let mut first = true;
         for line in lines {
-            for chunk in chunks(line, inner) {
-                let mut pad = block_w.saturating_sub(wrap::spans_width(&chunk)) + 1;
-                let mut spans = vec![Span::styled(" ", base)];
+            for (i, chunk) in wrap::hard_wrap(line, inner).into_iter().enumerate() {
+                let mut pad = inner.saturating_sub(wrap::spans_width(&chunk)) + 1;
+                let mut spans = vec![if i == 0 {
+                    Span::styled(" ", base)
+                } else {
+                    Span::styled(MORE, base.patch(theme.dim()))
+                }];
                 spans.extend(chunk);
                 let label_w = wrap::width(lang);
-                if first && label_w > 0 && pad > label_w + 2 && block_w == inner {
+                if first && label_w > 0 && pad > label_w + 2 {
                     spans.push(Span::styled(" ".repeat(pad - label_w - 1), base));
                     spans.push(Span::styled(lang.to_string(), base.patch(theme.dim())));
                     pad = 1;
                 }
                 spans.push(Span::styled(" ".repeat(pad), base));
-                self.emit_code(spans);
+                self.emit(spans);
                 first = false;
             }
         }
@@ -877,7 +855,7 @@ mod tests {
     use super::*;
 
     fn plain(md: &str, width: usize) -> String {
-        render(md, width, &Theme::plain(), true, None, None)
+        render(md, width, &Theme::plain(), None, None)
             .lines
             .iter()
             .map(|l| l.text() + "\n")
@@ -899,7 +877,6 @@ mod tests {
             "# Title\n\npara one\nstill one\n\npara two\n",
             80,
             &Theme::plain(),
-            true,
             None,
             None,
         )
@@ -919,12 +896,15 @@ mod tests {
     }
 
     #[test]
-    fn leaves_code_unwrapped_for_scrolling() {
+    fn wraps_long_code_with_a_mark() {
         let md = "> ```\n> a long line of code\n> ```\n";
-        let lines = render(md, 12, &Theme::plain(), false, None, None).lines;
-        let code = lines.iter().find(|l| l.text().contains("long")).unwrap();
-        assert_eq!(code.text(), "│     a long line of code");
-        assert_eq!(code.scroll_from, Some(2));
+        let lines = render(md, 16, &Theme::plain(), None, None).lines;
+        let code: Vec<_> = lines
+            .iter()
+            .map(RLine::text)
+            .filter(|t| t.len() > 2)
+            .collect();
+        assert_eq!(code, ["│     a long lin", "│   ↪ e of code"]);
     }
 
     #[test]
@@ -943,12 +923,11 @@ mod tests {
         );
         // Broken only when the file really isn't there.
         let md = "[ok](/docs/guide.md) [gone](/docs/nope.md)\n";
-        let r = render(md, 80, &Theme::plain(), true, Some(&base), Some(&dir));
+        let r = render(md, 80, &Theme::plain(), Some(&base), Some(&dir));
         let r_plain = render(
             md,
             80,
             &Theme::new(crate::theme::Mode::Dark, true),
-            true,
             Some(&base),
             Some(&dir),
         );
@@ -974,7 +953,7 @@ mod tests {
     #[test]
     fn records_headings_and_links() {
         let md = "# Intro\n\nSee [the guide](guide.md#setup) and [web](https://x.io).\n\n## Intro\n\n| a |\n|---|\n| [t](#intro) |\n";
-        let r = render(md, 80, &Theme::plain(), true, None, None);
+        let r = render(md, 80, &Theme::plain(), None, None);
         let slugs: Vec<_> = r
             .headings
             .iter()

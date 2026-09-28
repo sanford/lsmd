@@ -692,11 +692,11 @@ impl<'t> App<'t> {
         if (!ctrl || search) && self.nav_key(key) {
             return false;
         }
-        // Esc and Backspace with somewhere to go back to were handled above.
+        // Going back with somewhere to go back to was handled above.
         match key.code {
             KeyCode::Char('q') => return true,
             KeyCode::Esc if !browsing => return true,
-            KeyCode::Esc | KeyCode::Backspace if browsing => {
+            KeyCode::Esc | KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') if browsing => {
                 self.focus = Focus::List;
                 return false;
             }
@@ -731,9 +731,6 @@ impl<'t> App<'t> {
             KeyCode::Char('b') | KeyCode::PageUp => doc.scroll_by(-page, side),
             KeyCode::Char('g') | KeyCode::Home => doc.scroll_to_top(side),
             KeyCode::Char('G') | KeyCode::End => doc.scroll_to_bottom(side),
-            KeyCode::Char('h') | KeyCode::Left => doc.scroll_sideways(-8),
-            KeyCode::Char('l') | KeyCode::Right => doc.scroll_sideways(8),
-            KeyCode::Char('0') => doc.scroll_sideways(isize::MIN / 2),
             _ => {}
         }
         false
@@ -1127,9 +1124,11 @@ fn draw_help(f: &mut Frame) {
     const KEYS: &[(&str, &str)] = &[
         ("↑↓ j k", "Move / scroll"),
         ("⏎ l →", "Read the selected file"),
-        ("esc ⌫", "Back a document, then to the list (quits there)"),
+        (
+            "esc ⌫ ← h",
+            "Back a document, then to the list (esc quits there)",
+        ),
         ("q", "Quit"),
-        ("← → h l", "Scroll long code lines sideways (0: back)"),
         ("] [", "Next / previous heading"),
         ("o", "Outline: the text follows as you move (/ filters)"),
         ("O", "Keep the outline open beside the text"),

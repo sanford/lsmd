@@ -120,7 +120,6 @@ fn run(args: Args) -> io::Result<()> {
         &md,
         width.unwrap_or_else(terminal_width),
         &theme,
-        true,
         base,
         base.map(files::site_root).as_deref(),
     )

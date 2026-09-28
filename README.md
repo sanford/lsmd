@@ -106,14 +106,13 @@ Reading:
 |---|---|
 | `↑` `↓` `j` `k` | Scroll a line; with `Shift` (`⇧↑` `⇧↓` `K` `J`), a page |
 | `Space` `b`, `d` `u`, `g` `G` | Page, half page; top, bottom |
-| `←` `→` `h` `l` | Scroll long code lines sideways (`0` back to the start) |
 | `/` `n` `N` | Search this document; next and previous match |
 | `]` `[` | Next and previous heading |
 | `o` | Outline: `↑` `↓` `j` `k` go through the headings with the text following as you move, `/` filters them, `Enter` reads from there, `Esc` goes back to where you were |
 | `O` | The same outline, kept open beside the document, highlighting the section you're reading. `Enter` gives the keyboard back to the text, `O` gives it to the outline again, and `O` from the outline closes it |
 | `f` | Follow a link: type the letters drawn on it |
 | `L` | Links: what this links to, and what links here (in this and the other popups: `↑` `↓` `j` `k` move, `/` filters, `Enter` goes) |
-| `Esc` `Backspace` | Back to where you were before following a link; then the list |
+| `Esc` `Backspace` `←` `h` | Back to where you were before following a link; then the list |
 | `q` | Quit |
 
 Anywhere:

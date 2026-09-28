@@ -76,7 +76,11 @@ impl App<'_> {
             KeyCode::Char('L') => self.open_links(),
             KeyCode::Char('f') => self.show_hints(),
             KeyCode::Esc if doc.search_status().is_some() => doc.clear_search(),
-            KeyCode::Esc | KeyCode::Backspace if !self.history.is_empty() => self.go_back(),
+            KeyCode::Esc | KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h')
+                if !self.history.is_empty() =>
+            {
+                self.go_back()
+            }
             _ => return false,
         }
         true

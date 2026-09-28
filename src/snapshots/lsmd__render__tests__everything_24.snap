@@ -60,9 +60,9 @@ an html break.
 
     fn main() {
         println!("hello,
-     a fairly long line
-    that will need wrapp
-    ing somewhere");
+  ↪  a fairly long line
+  ↪ that will need wrapp
+  ↪ ing somewhere");
     }
 
     indented code

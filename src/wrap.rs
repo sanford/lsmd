@@ -324,38 +324,6 @@ pub fn wrap_source(spans: Vec<Span<'static>>, width: usize) -> Vec<Vec<Span<'sta
     lines
 }
 
-/// The part of a line from column `start`, at most `len` columns wide. A
-/// wide character cut in half by either edge becomes spaces.
-pub fn slice(spans: &[Span<'static>], start: usize, len: usize) -> Vec<Span<'static>> {
-    let end = start + len;
-    let mut out = Vec::new();
-    let mut col = 0;
-    for span in spans {
-        let mut text = String::new();
-        for g in span.content.graphemes(true) {
-            let w = width_of(g);
-            let (from, to) = (col, col + w);
-            col = to;
-            if to <= start || from >= end {
-                continue;
-            }
-            if from < start || to > end {
-                let visible = to.min(end) - from.max(start);
-                text.extend(std::iter::repeat_n(' ', visible));
-            } else {
-                text.push_str(g);
-            }
-        }
-        if !text.is_empty() {
-            out.push(Span::styled(text, span.style));
-        }
-        if col >= end {
-            break;
-        }
-    }
-    out
-}
-
 /// Patches `style` onto columns `start..end` of a line.
 pub fn restyle(
     spans: Vec<Span<'static>>,
@@ -512,15 +480,6 @@ mod tests {
         assert_eq!(text(&lines), ["  indented ", "words here"]);
         let lines = wrap_source(vec![Span::raw("abcdefgh")], 3);
         assert_eq!(text(&lines), ["abc", "def", "gh"]);
-    }
-
-    #[test]
-    fn slices_columns() {
-        let spans = vec![Span::raw("ab"), Span::raw("日本")];
-        assert_eq!(text(&[slice(&spans, 1, 3)]), ["b日"]);
-        assert_eq!(text(&[slice(&spans, 3, 3)]), [" 本"]);
-        assert_eq!(text(&[slice(&spans, 3, 2)]), ["  "]);
-        assert_eq!(text(&[slice(&spans, 2, 3)]), ["日 "]);
     }
 
     #[test]

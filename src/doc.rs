@@ -110,10 +110,6 @@ pub struct Doc {
     width: usize,
     /// Index of the first visible rendered line.
     top: usize,
-    /// Columns scrolled sideways, for code.
-    left: usize,
-    /// How far `left` can go.
-    max_left: usize,
 
     source: Vec<SLine>,
     source_width: usize,
@@ -150,8 +146,6 @@ impl Doc {
             blocks: Vec::new(),
             width: 0,
             top: 0,
-            left: 0,
-            max_left: 0,
             source: Vec::new(),
             source_width: 0,
             source_top: 0,
@@ -213,7 +207,6 @@ impl Doc {
             &self.md,
             width,
             theme,
-            false,
             self.base.as_deref(),
             self.site.as_deref(),
         );
@@ -226,14 +219,6 @@ impl Doc {
             self.find(&query);
         }
         self.blocks = blocks(&self.lines);
-        self.max_left = self
-            .lines
-            .iter()
-            .filter(|l| l.scroll_from.is_some())
-            .map(|l| wrap::spans_width(&l.spans).saturating_sub(width))
-            .max()
-            .unwrap_or(0);
-        self.left = self.left.min(self.max_left);
         self.top = pos.map_or(0, |p| self.rendered_top_for(p));
         if let Some((text, offset, old)) = self.keep.take() {
             // The same text nearest where it was, if it's still there.
@@ -411,7 +396,7 @@ impl Doc {
             .enumerate()
             .map(|(i, l)| {
                 let line = self.highlighted(self.top + i, l);
-                Line::from(self.scrolled(&line, width))
+                Line::from(line.spans)
             })
             .collect();
         f.render_widget(Paragraph::new(visible), area);
@@ -536,36 +521,6 @@ impl Doc {
             line.spans = wrap::restyle(line.spans, start, end, style);
         }
         line
-    }
-
-    /// A rendered line as it appears scrolled `left` columns sideways, with
-    /// ‹ and › where code runs off either edge.
-    fn scrolled(&self, line: &RLine, width: usize) -> Vec<Span<'static>> {
-        let Some(from) = line.scroll_from else {
-            return line.spans.clone();
-        };
-        let total = wrap::spans_width(&line.spans);
-        if total <= width && self.left == 0 {
-            return line.spans.clone();
-        }
-        let room = width.saturating_sub(from);
-        let mut out = wrap::slice(&line.spans, 0, from);
-        let clipped_left = self.left > 0;
-        let clipped_right = from + self.left + room < total;
-        let start = from + self.left + usize::from(clipped_left);
-        let len = room.saturating_sub(usize::from(clipped_left) + usize::from(clipped_right));
-        let middle = wrap::slice(&line.spans, start, len);
-        let edge_style = |spans: &[Span]| spans.first().map_or(Style::new(), |s| s.style).dim();
-        if clipped_left {
-            let style = edge_style(&wrap::slice(&line.spans, from + self.left, 1));
-            out.push(Span::styled("‹", style));
-        }
-        out.extend(middle);
-        if clipped_right {
-            let style = edge_style(&wrap::slice(&line.spans, start + len, 1));
-            out.push(Span::styled("›", style));
-        }
-        out
     }
 
     fn draw_source(&self, f: &mut Frame, area: Rect, focused: bool, theme: &Theme) {
@@ -871,10 +826,6 @@ impl Doc {
 
     pub fn scroll_to_bottom(&mut self, side: Side) {
         self.scroll_by(isize::MAX / 2, side);
-    }
-
-    pub fn scroll_sideways(&mut self, delta: isize) {
-        self.left = self.left.saturating_add_signed(delta).min(self.max_left);
     }
 
     pub fn page(&self) -> isize {
