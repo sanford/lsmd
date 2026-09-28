@@ -13,11 +13,13 @@ permissions:
   contents: read
 
 jobs:
-  # Runs the owner's accounts start (a push, a manual run, a re-run) go
-  # straight through. Anyone else's wait here, on a GitHub-hosted runner,
-  # until the owner approves them in the `approval` environment.
+  # Runs the owners start (a push, a manual run, a re-run) go straight
+  # through. Anyone else's wait here, on a GitHub-hosted runner, until an
+  # owner approves them in the `approval` environment. The owners' accounts
+  # are the TRUSTED_ACTORS repository variable, a JSON list; without it,
+  # every run waits.
   approve:
-    if: ${{ !contains(fromJSON('["sanford", "REDACTED"]'), github.triggering_actor) }}
+    if: ${{ !contains(fromJSON(vars.TRUSTED_ACTORS || '[]'), github.triggering_actor) }}
     runs-on: ubuntu-latest
     environment: approval
     steps:
@@ -27,16 +29,17 @@ jobs:
     needs: approve
     if: ${{ !cancelled() && (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
     runs-on: [self-hosted, Windows, X64]
-    # The toolchain is installed machine-wide in REDACTED, shared with the
-    # machine's own user, so the runner service needs no environment of its own.
+    # The toolchain is installed machine-wide, in the folder named by the
+    # RUST_DIR secret (a secret so the logs don't show the machine's layout),
+    # so the runner service needs no environment of its own.
     env:
-      RUSTUP_HOME: REDACTED\rustup
-      CARGO_HOME: REDACTED\cargo
+      RUSTUP_HOME: ${{ secrets.RUST_DIR }}\rustup
+      CARGO_HOME: ${{ secrets.RUST_DIR }}\cargo
     defaults:
       run:
         shell: pwsh
     steps:
-      - run: Add-Content $env:GITHUB_PATH 'REDACTED\cargo\bin'
+      - run: Add-Content $env:GITHUB_PATH "$env:CARGO_HOME\bin"
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
       - run: cargo test --locked --release
       - run: cargo clippy --locked --release --all-targets -- -D warnings
