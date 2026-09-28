@@ -15,7 +15,7 @@
 use crate::doc::SourceSide;
 use crate::theme::Choice;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -65,15 +65,26 @@ fn parse(text: &str) -> Result<Config, String> {
 /// was. Returns the file's path.
 pub fn save_theme(theme: &str) -> std::io::Result<PathBuf> {
     let path = path().ok_or_else(|| std::io::Error::other("no home directory"))?;
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    // Through a symlink (a dotfiles repo, say) to the file itself, so the
+    // rename below replaces the file rather than the link.
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    write_theme(&path, theme)?;
+    Ok(path)
+}
+
+fn write_theme(path: &Path, theme: &str) -> std::io::Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     // Written beside it and renamed over it, so it's never half-written.
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, with_theme(&text, theme))?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(path)
+    // With the old file's permissions, not the new one's defaults.
+    if let Ok(meta) = std::fs::metadata(path) {
+        std::fs::set_permissions(&tmp, meta.permissions())?;
+    }
+    std::fs::rename(&tmp, path)
 }
 
 /// `text` with its `theme =` line set to `theme`, or one added.
@@ -124,6 +135,25 @@ mod tests {
             "theme = \"nord\"\nthemes = 1\n",
             "only the theme line"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("lsmd-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.toml");
+        std::fs::write(&file, "width = 90\n").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_theme(&file, "nord").unwrap();
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "theme = \"nord\"\nwidth = 90\n"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

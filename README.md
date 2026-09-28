@@ -170,3 +170,5 @@ outline = true          # show the outline beside documents
 Copyright (C) 2026 Sanford Lincoln
 
 `lsmd` is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE).
+
+The color themes in [`themes/`](themes/) are [Omarchy](https://omarchy.org)'s, copyright (c) David Heinemeier Hansson, and used under the MIT License. See [themes/LICENSE](themes/LICENSE).

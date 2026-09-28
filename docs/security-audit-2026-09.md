@@ -1,6 +1,6 @@
 # Security audit, September 2026
 
-An audit of lsmd 0.1.0, with every finding fixed in the release after it.
+An audit of lsmd 0.1.0, with every finding fixed in the release after it, and a [follow-up](#follow-up-color-themes) on the color themes added in 0.4.0.
 
 ## What was in scope
 
@@ -54,3 +54,43 @@ The Windows job runs on a self-hosted runner, so code from outside must never re
 
 - **Release downloads have no published checksums or signatures,** and the Windows `.exe` is unsigned. Homebrew checks the source tarball's SHA-256 itself.
 - **Terminal hyperlinks (OSC 8)** aren't used, so there's no link-spoofing surface there yet. If they're added, they need the same checks as finding 3.
+
+## Follow-up: color themes
+
+A review of what 0.4.0 added: following the Omarchy desktop's theme, the bundled themes, and the theme picker, which saves to the config file.
+
+### What was in scope
+
+- **Reading Omarchy's theme.** On Omarchy, lsmd reads `~/.local/state/omarchy/current/theme/colors.toml` and watches that directory for changes. The file usually comes from Omarchy, but themes can be installed from anyone's git repository, so its contents were treated as hostile.
+- **Writing the config file.** Choosing a theme rewrites `~/.lsmd/config.toml`. Until now lsmd only read it.
+- **Painting.** A picked theme draws its colors itself rather than changing the terminal's palette.
+- **The new dependency**, `omarchy-themes`.
+
+### Findings
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 9 | Low | **Saving a theme replaced a symlinked config with a plain file.** A `~/.lsmd/config.toml` linked into a dotfiles repository stopped being a link, and the repository's copy stopped changing. | The link is followed, and the file it points to is rewritten. |
+| 10 | Low | **Saving a theme reset the config's permissions.** The rewritten file got the default permissions, so a config made owner-only became readable by other users. | The new file takes the old one's permissions before it replaces it. |
+
+Both were found before release.
+
+### Checked and fine
+
+- **Theme files can't reach the terminal.** Only colors come out of `colors.toml`: each is parsed from `#rrggbb` into three numbers, and anything else in the file is dropped. No text from it is ever shown or printed.
+- **Theme files can't crash lsmd.** The parser only slices strings at ASCII quote characters and checks colors are ASCII before slicing them. 300,000 mutated `colors.toml` files, about half of them valid enough to resolve every color, produced no panic. A file that doesn't parse leaves lsmd on its built-in colors.
+- **The watcher** watches one directory, not its subdirectories, re-reads a single file on each change, and only redraws when the colors actually changed. Nothing in it runs anything.
+- **The config file is written safely.** Only a theme name from lsmd's own list is written, so nothing from outside ends up in the file. It's written to a temporary file beside it and renamed into place, so it's never half-written, and the rest of the file is kept line for line.
+- **Painting leaves the terminal as it was.** lsmd colors each cell itself and never changes the terminal's palette (OSC 4, 10, 11), so there's nothing to undo if it crashes or is killed.
+- **The bundled themes** are Omarchy's `colors.toml` files, built into the binary, under the MIT license, whose notice ships beside them in `themes/LICENSE`.
+
+### Dependencies
+
+`omarchy-themes` 0.1.0 is new and has one maintainer, so its source was read in full before it was added:
+
+- no build script and no `unsafe` code (`#![forbid(unsafe_code)]`)
+- no network access and no processes started; it reads files and watches a directory.
+
+Its only dependency, `notify`, was already used for live reload. It's pinned to exactly `=0.1.0`, and the checksum in `Cargo.lock` matches the source that was read, so an update can't arrive without being reviewed.
+
+All 264 crates in `Cargo.lock` were checked against the OSV/RustSec advisory database again. The only advisory is the accepted one for `bincode`, described above.
