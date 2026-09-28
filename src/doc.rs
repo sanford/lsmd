@@ -703,7 +703,7 @@ impl Doc {
             return;
         }
         let from = self.rendered_top_for(line as f64);
-        self.search(query, from);
+        self.search(query, from, true);
     }
 
     pub fn top(&self) -> usize {
@@ -713,18 +713,27 @@ impl Doc {
     /// Searches the rendered text for `query` and jumps to the first match
     /// at or after line `from`. Smart case: case matters only if the query
     /// has capitals. Returns false if nothing matches.
-    pub fn search(&mut self, query: &str, from: usize) -> bool {
+    pub fn search(&mut self, query: &str, from: usize, forward: bool) -> bool {
         if query.is_empty() {
             self.search = None;
             return true;
         }
         self.find(query);
         let search = self.search.as_mut().unwrap();
-        let next = search
-            .matches
-            .iter()
-            .position(|m| m.0 >= from)
-            .or((!search.matches.is_empty()).then_some(0));
+        let matches = &search.matches;
+        // The first match from `from` on, or the last one above it,
+        // wrapping around if there's none that way.
+        let next = if forward {
+            matches
+                .iter()
+                .position(|m| m.0 >= from)
+                .or((!matches.is_empty()).then_some(0))
+        } else {
+            matches
+                .iter()
+                .rposition(|m| m.0 < from)
+                .or(matches.len().checked_sub(1))
+        };
         search.current = next;
         if let Some(i) = next {
             let line = search.matches[i].0;
@@ -933,6 +942,25 @@ mod tests {
         doc.layout_source(width, &theme);
         doc.height = 1;
         doc
+    }
+
+    #[test]
+    fn searches_forward_or_back_from_a_line() {
+        let theme = Theme::plain();
+        let mut doc = Doc::new("x\n\nx\n\nx\n\nx\n".into());
+        doc.layout(40, &theme);
+        doc.height = 1;
+        // Matches on lines 0, 2, 4 and 6: from line 3, the next is on 4 and
+        // the one before on 2.
+        assert!(doc.search("x", 3, true));
+        assert_eq!(doc.search_status().unwrap(), "3/4");
+        assert!(doc.search("x", 3, false));
+        assert_eq!(doc.search_status().unwrap(), "2/4");
+        // Nothing that way: wrap around.
+        assert!(doc.search("x", 100, true));
+        assert_eq!(doc.search_status().unwrap(), "1/4");
+        assert!(doc.search("x", 0, false));
+        assert_eq!(doc.search_status().unwrap(), "4/4");
     }
 
     #[test]

@@ -128,7 +128,7 @@ Anywhere:
 | `\` | Keep the file list on screen while reading |
 | `?` | All of the above |
 
-Emacs keys work everywhere too: `Ctrl-N` `Ctrl-P` move down and up, `Ctrl-V` `Alt-V` a page, `Alt-<` `Alt->` to the ends, and `Ctrl-G` is `Esc`.
+Emacs keys work everywhere too: `Ctrl-N` `Ctrl-P` move down and up, `Ctrl-V` `Alt-V` a page, `Alt-<` `Alt->` to the ends, and `Ctrl-G` is `Esc`. In a document, `Ctrl-S` and `Ctrl-R` search forward and backward; while you type, they go to the next and previous match, and `Ctrl-S` on an empty search repeats the last one.
 
 The mouse works too: the wheel scrolls what's under it, the scrollbar and the outline jump where you click, clicking a file selects it and clicking again opens it, and clicking a link follows it. `--no-mouse` leaves the mouse to the terminal, so you can select text without holding a modifier key.
 

@@ -171,6 +171,8 @@ struct App<'t> {
     prompt: Option<nav::Prompt>,
     /// Where following links has come from, to go back to.
     history: Vec<nav::Place>,
+    /// The last search of a document, for `C-s` on an empty prompt.
+    last_search: String,
     /// A message for the footer, until the next key.
     flash: Option<String>,
     /// A file to open in the editor, at a line, once the key's handled.
@@ -224,6 +226,7 @@ impl<'t> App<'t> {
             source_right: true,
             prompt: None,
             history: Vec::new(),
+            last_search: String::new(),
             flash: None,
             edit: None,
             grep: None,
@@ -684,7 +687,9 @@ impl<'t> App<'t> {
 
     fn reader_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
         let browsing = self.text.is_none();
-        if !ctrl && self.nav_key(key) {
+        // Of the Ctrl keys, only Emacs's searches are for getting around.
+        let search = matches!(key.code, KeyCode::Char('s' | 'r'));
+        if (!ctrl || search) && self.nav_key(key) {
             return false;
         }
         // Esc and Backspace with somewhere to go back to were handled above.
@@ -1142,6 +1147,7 @@ fn draw_help(f: &mut Frame) {
         ("e", "Edit the file in $EDITOR, at this point"),
         ("y Y", "Copy the code block on screen / the file's path"),
         ("/ n N", "Search; next / previous match"),
+        ("^s ^r", "Emacs search: while typing, next / previous match"),
         ("f", "Follow a link (type the letters shown on it)"),
         ("⇧↓ ⇧↑ J K", "Page down / up"),
         (

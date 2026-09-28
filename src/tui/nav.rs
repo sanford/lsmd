@@ -6,7 +6,7 @@ use super::{App, Focus};
 use crate::files;
 use crate::render;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 use std::path::PathBuf;
@@ -14,7 +14,13 @@ use std::path::PathBuf;
 /// Something in the reader that takes the keyboard until it's done.
 pub enum Prompt {
     /// Typing a search. `from` is where the search started.
-    Search { query: String, from: usize },
+    /// Searching the document as you type, from line `from`, forward
+    /// unless it was started with `C-r`.
+    Search {
+        query: String,
+        from: usize,
+        forward: bool,
+    },
     /// Choosing a link by its hint letters.
     Hints { typed: String },
     /// The outline or the links panel.
@@ -41,13 +47,16 @@ impl App<'_> {
         let Some(doc) = self.current() else {
             return false;
         };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('/') => {
+            // `/`, or Emacs's C-s and C-r.
+            KeyCode::Char(c) if c == '/' || (ctrl && matches!(c, 's' | 'r')) => {
                 let from = doc.top();
                 doc.clear_search();
                 self.prompt = Some(Prompt::Search {
                     query: String::new(),
                     from,
+                    forward: c != 'r',
                 });
             }
             KeyCode::Char(c @ ('n' | 'N')) => {
@@ -77,9 +86,32 @@ impl App<'_> {
     /// puts it back. Returns true to quit.
     pub(super) fn prompt_key(&mut self, prompt: Prompt, key: KeyEvent, ctrl: bool) -> bool {
         match prompt {
-            Prompt::Search { mut query, from } => {
+            Prompt::Search {
+                mut query,
+                from,
+                forward,
+            } => {
                 match key.code {
+                    // Emacs: the next or previous match, still typing. On an
+                    // empty prompt, C-s brings back the last search.
+                    KeyCode::Char('s') if ctrl && query.is_empty() => {
+                        query = self.last_search.clone();
+                    }
+                    KeyCode::Char(c @ ('s' | 'r')) if ctrl => {
+                        if let Some(doc) = self.current() {
+                            doc.search_next(c == 's');
+                        }
+                        self.prompt = Some(Prompt::Search {
+                            query,
+                            from,
+                            forward,
+                        });
+                        return false;
+                    }
                     KeyCode::Enter => {
+                        if !query.is_empty() {
+                            self.last_search = query.clone();
+                        }
                         if let Some(doc) = self.current()
                             && doc.search_status().is_some_and(|s| s.starts_with("0/"))
                         {
@@ -99,12 +131,24 @@ impl App<'_> {
                         query.pop();
                     }
                     KeyCode::Char(c) if !ctrl => query.push(c),
-                    _ => {}
+                    // Anything else leaves the search as it is.
+                    _ => {
+                        self.prompt = Some(Prompt::Search {
+                            query,
+                            from,
+                            forward,
+                        });
+                        return false;
+                    }
                 }
                 if let Some(doc) = self.current() {
-                    doc.search(&query, from);
+                    doc.search(&query, from, forward);
                 }
-                self.prompt = Some(Prompt::Search { query, from });
+                self.prompt = Some(Prompt::Search {
+                    query,
+                    from,
+                    forward,
+                });
             }
             Prompt::Hints { mut typed } => {
                 let KeyCode::Char(c) = key.code else {
