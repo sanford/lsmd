@@ -41,7 +41,7 @@ pub struct Place {
 /// Letters for link hints, easiest to reach first.
 const HINT_KEYS: &str = "asdfjklghqwertyuiopzxcvbnm";
 
-impl App<'_> {
+impl App {
     /// Reader keys for getting around. Returns true if the key was one.
     pub(super) fn nav_key(&mut self, key: KeyEvent) -> bool {
         let Some(doc) = self.current() else {
@@ -183,6 +183,7 @@ impl App<'_> {
             Prompt::Pick(mut picker) => match picker.key(key, ctrl) {
                 Outcome::Stay => self.prompt = Some(Prompt::Pick(picker)),
                 Outcome::Close => {}
+                Outcome::Choose(Target::Theme(choice)) => self.keep_theme(choice),
                 Outcome::Choose(target) => self.go(target),
                 Outcome::Quit => return true,
             },
@@ -342,6 +343,7 @@ impl App<'_> {
                 self.open_path(path.clone(), None);
                 self.doc(&path).go_to_match(line, &query);
             }
+            Target::Theme(_) => unreachable!("themes are kept in prompt_key"),
         }
         if from_list {
             self.history.clear();

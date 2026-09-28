@@ -8,7 +8,7 @@ use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 use std::path::{Component, Path, PathBuf};
 
-impl App<'_> {
+impl App {
     /// `path` relative to the root, if it's under it.
     pub(super) fn rel_of(&self, path: &Path) -> Option<String> {
         let rest = path.strip_prefix(self.root.as_ref()?).ok()?;

@@ -1,5 +1,5 @@
-//! A popup list to choose from, filtered by typing: the outline and the
-//! links panel.
+//! A popup list to choose from, filtered by typing: the outline, the
+//! links panel and the themes.
 
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Paragraph};
 use std::path::PathBuf;
 
 /// What choosing a row does.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     /// Jump to this rendered line of the current document.
     Line(usize),
@@ -22,6 +22,8 @@ pub enum Target {
     File(PathBuf),
     /// Open this file at a search match: source line and query.
     Match(PathBuf, usize, String),
+    /// Switch to this theme.
+    Theme(crate::theme::Choice),
 }
 
 pub struct Row {
@@ -39,6 +41,10 @@ impl Row {
             line,
             target: Some(target),
         }
+    }
+
+    pub fn target(&self) -> Option<&Target> {
+        self.target.as_ref()
     }
 
     pub fn choosable(&self) -> bool {
@@ -196,6 +202,13 @@ impl Picker {
             self.select_from(to, -step);
         }
         Outcome::Stay
+    }
+
+    /// What the selected row points to.
+    pub fn selected(&self) -> Option<&Target> {
+        let visible = self.visible();
+        let i = visible.get(self.list.selected()?)?;
+        self.rows[*i].target.as_ref()
     }
 
     fn choose(&self) -> Outcome {

@@ -927,7 +927,7 @@ mod tests {
         let r_plain = render(
             md,
             80,
-            &Theme::new(crate::theme::Mode::Dark, true),
+            &Theme::new(crate::theme::Mode::Dark, true, None),
             Some(&base),
             Some(&dir),
         );

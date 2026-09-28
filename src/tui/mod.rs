@@ -6,11 +6,13 @@ mod nav;
 mod outline;
 mod picker;
 mod search_all;
+mod themes;
 
 use crate::doc::{Doc, Side, SourceSide, Split};
 use crate::files::{self, Entry};
 use crate::index::{self, Index};
-use crate::theme::Theme;
+use crate::omarchy::Follow;
+use crate::theme::{Choice, Mode, Theme};
 use crate::watch::Watch;
 use crate::wrap;
 use crate::{clipboard, editor};
@@ -25,6 +27,7 @@ use ratatui::{DefaultTerminal, Frame};
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, SystemTime};
 
@@ -54,10 +57,27 @@ pub struct Settings {
     pub by_date: bool,
     /// Open documents with the outline pane beside them.
     pub outline: bool,
+    /// The theme asked for, by flag or config.
+    pub choice: Choice,
+    /// Colors come from Omarchy's theme, and follow it.
+    pub omarchy: bool,
 }
 
-pub fn run(source: Source, theme: &Theme, settings: Settings) -> io::Result<()> {
+pub fn run(source: Source, theme: Theme, settings: Settings) -> io::Result<()> {
+    // Previewing `auto` in the theme picker needs the terminal's background,
+    // and it can't be asked once the screen is ours.
+    let terminal_dark = match settings.choice {
+        Choice::Mode(Mode::Auto) if !settings.omarchy => theme.dark,
+        _ if theme.color && !settings.omarchy => crate::theme::detect_dark(),
+        _ => true,
+    };
     let mut app = App::new(source, theme, settings.max_width);
+    app.choice = settings.choice;
+    app.terminal_dark = terminal_dark;
+    if settings.omarchy {
+        app.follow = Follow::start();
+    }
+    app.omarchy = settings.omarchy;
     app.split = settings.split;
     app.source_right = settings.source_side == SourceSide::Right;
     let mut terminal = ratatui::init();
@@ -106,8 +126,16 @@ struct Shown {
     hits: Vec<u32>,
 }
 
-struct App<'t> {
-    theme: &'t Theme,
+struct App {
+    theme: Rc<Theme>,
+    /// The theme shown: what was asked for, or what's being previewed.
+    choice: Choice,
+    /// The theme and choice from before the theme picker opened, while it's
+    /// open.
+    theme_before: Option<(Rc<Theme>, Choice)>,
+    terminal_dark: bool,
+    omarchy: bool,
+    follow: Option<Follow>,
     max_width: Option<usize>,
 
     /// Standard input's document, when there's no file list.
@@ -184,10 +212,15 @@ struct App<'t> {
     docs: HashMap<PathBuf, Doc>,
 }
 
-impl<'t> App<'t> {
-    fn new(source: Source, theme: &'t Theme, max_width: Option<usize>) -> App<'t> {
+impl App {
+    fn new(source: Source, theme: Theme, max_width: Option<usize>) -> App {
         let mut app = App {
-            theme,
+            theme: Rc::new(theme),
+            choice: Choice::Mode(Mode::Auto),
+            theme_before: None,
+            terminal_dark: true,
+            omarchy: false,
+            follow: None,
             max_width,
             text: None,
             root_label: String::new(),
@@ -265,6 +298,7 @@ impl<'t> App<'t> {
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         loop {
             self.receive();
+            self.preview_theme();
             terminal.draw(|f| self.draw(f))?;
             // While scanning or indexing, wake up now and then to show
             // what's new.
@@ -309,6 +343,7 @@ impl<'t> App<'t> {
     /// index when it's ready.
     fn receive(&mut self) {
         self.reload();
+        self.restyle();
         self.receive_grep();
         if let Some(rx) = &self.indexing
             && let Ok(index) = rx.try_recv()
@@ -415,6 +450,23 @@ impl<'t> App<'t> {
             self.docs.insert(path.to_path_buf(), doc);
         }
         self.docs.get_mut(path).unwrap()
+    }
+
+    /// Switches to the Omarchy theme's new colors, if it has changed.
+    fn restyle(&mut self) {
+        let Some(palette) = self.follow.as_ref().and_then(Follow::changed) else {
+            return;
+        };
+        // Following is only on with color.
+        self.set_theme(Rc::new(Theme::new(Mode::Auto, true, Some(&palette))));
+    }
+
+    fn set_theme(&mut self, theme: Rc<Theme>) {
+        self.theme = theme;
+        let text = self.text.iter_mut().map(|(_, doc)| doc);
+        for doc in self.docs.values_mut().chain(text) {
+            doc.restyle();
+        }
     }
 
     /// Catches up with files that have changed: open documents re-render
@@ -554,6 +606,7 @@ impl<'t> App<'t> {
             KeyCode::Char('Y') => self.copy_path(),
             KeyCode::Char('O') if self.focus == Focus::Reader => self.focus_outline(false),
             KeyCode::Char('O') => self.outline_pane = !self.outline_pane,
+            KeyCode::Char('t') if !ctrl => self.open_themes(),
             KeyCode::Char('s') if !ctrl => {
                 self.prompt = Some(nav::Prompt::Grep {
                     query: String::new(),
@@ -780,6 +833,7 @@ impl<'t> App<'t> {
         if self.help {
             draw_help(f);
         }
+        self.theme.paint(f.buffer_mut());
     }
 
     fn draw_header(&mut self, f: &mut Frame, area: Rect) {
@@ -923,7 +977,7 @@ impl<'t> App<'t> {
         if let Some(max) = self.max_width {
             width = width.min(max);
         }
-        let theme = self.theme;
+        let theme = Rc::clone(&self.theme);
         let split = self.split.then(|| Split {
             ratio: self.ratio,
             focus: self.side(),
@@ -932,9 +986,9 @@ impl<'t> App<'t> {
         });
         if let Some(doc) = self.current() {
             if let Some(split) = split {
-                doc.draw_split(f, area, &split, theme);
+                doc.draw_split(f, area, &split, &theme);
             } else {
-                doc.draw(f, area, width, theme);
+                doc.draw(f, area, width, &theme);
             }
         }
         // After the document, so it shows the section it's scrolled to.
@@ -1134,6 +1188,7 @@ fn draw_help(f: &mut Frame) {
         ("O", "Keep the outline open beside the text"),
         ("L", "Links: to and from this document"),
         ("s", "Search the text of every file"),
+        ("t", "Pick a color theme"),
         ("e", "Edit the file in $EDITOR, at this point"),
         ("y Y", "Copy the code on screen / the file's path"),
         ("/ n N", "Search; next / previous match"),
@@ -1287,14 +1342,14 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    fn scanned<'t>(root: &Path, open: Option<PathBuf>, theme: &'t Theme) -> App<'t> {
+    fn scanned(root: &Path, open: Option<PathBuf>) -> App {
         let mut app = App::new(
             Source::Browse {
                 root: root.to_path_buf(),
                 open,
                 all: false,
             },
-            theme,
+            Theme::plain(),
             None,
         );
         while app.scan.is_some() {
@@ -1312,12 +1367,10 @@ mod tests {
             std::fs::write(dir.join(f), "# x\n").unwrap();
         }
         let dir = std::fs::canonicalize(&dir).unwrap();
-        let theme = Theme::plain();
-
-        let app = scanned(&dir, Some(dir.join("sub/c.md")), &theme);
+        let app = scanned(&dir, Some(dir.join("sub/c.md")));
         assert_eq!(app.selected().unwrap().rel, "sub/c.md");
 
-        let app = scanned(&dir, None, &theme);
+        let app = scanned(&dir, None);
         assert_eq!(app.selected().unwrap().rel, "a.md");
         std::fs::remove_dir_all(&dir).unwrap();
     }

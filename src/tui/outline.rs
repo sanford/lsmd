@@ -12,7 +12,7 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
-impl App<'_> {
+impl App {
     /// How wide the pane is beside a document area of `width` columns.
     pub(super) fn outline_width(width: u16) -> u16 {
         // Constant bounds, so clamp is safe here, unlike with a screen size.

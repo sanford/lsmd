@@ -972,6 +972,7 @@ dependencies = [
  "insta",
  "notify-debouncer-mini",
  "nucleo-matcher",
+ "omarchy-themes",
  "ratatui",
  "serde",
  "serde_json",
@@ -1147,6 +1148,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "omarchy-themes"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "906e4aa9927a2dd20a046940434ddd0212b1a4a324e888143d9467104681076a"
+dependencies = [
+ "notify",
 ]
 
 [[package]]

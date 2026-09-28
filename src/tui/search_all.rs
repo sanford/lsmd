@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 /// Show at most this many columns of a matching line.
 const SNIPPET: usize = 100;
 
-impl App<'_> {
+impl App {
     pub(super) fn start_grep(&mut self, query: String) {
         if query.is_empty() {
             return;

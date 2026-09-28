@@ -1,11 +1,14 @@
 //! Syntax highlighting for code blocks.
 
 use crate::theme::Theme;
+use omarchy_theme::{Palette, Rgb};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{FontStyle, Theme as SyntaxTheme};
+use syntect::highlighting::{
+    Color, FontStyle, ScopeSelectors, StyleModifier, Theme as SyntaxTheme, ThemeItem, ThemeSettings,
+};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use two_face::theme::EmbeddedThemeName;
@@ -17,7 +20,14 @@ fn syntaxes() -> &'static SyntaxSet {
     SET.get_or_init(two_face::syntax::extra_newlines)
 }
 
-fn syntax_theme(dark: bool) -> &'static SyntaxTheme {
+fn syntax_theme(theme: &Theme) -> &SyntaxTheme {
+    theme
+        .syntax
+        .as_ref()
+        .unwrap_or_else(|| builtin_theme(theme.dark))
+}
+
+fn builtin_theme(dark: bool) -> &'static SyntaxTheme {
     static DARK: OnceLock<SyntaxTheme> = OnceLock::new();
     static LIGHT: OnceLock<SyntaxTheme> = OnceLock::new();
     let (cell, name) = if dark {
@@ -26,6 +36,91 @@ fn syntax_theme(dark: bool) -> &'static SyntaxTheme {
         (&LIGHT, EmbeddedThemeName::OneHalfLight)
     };
     cell.get_or_init(|| two_face::theme::extra().get(name).clone())
+}
+
+/// A syntax theme in an Omarchy palette's colors, scope for scope what
+/// Omarchy's own Helix template picks.
+pub fn palette_theme(p: &Palette) -> SyntaxTheme {
+    let italic = FontStyle::ITALIC;
+    let bold = FontStyle::BOLD;
+    let none = FontStyle::empty();
+    let rules: [(&str, Rgb, FontStyle); 29] = [
+        ("comment", p.ansi(8), italic),
+        // Quotes and comment markers go with what they mark.
+        (
+            "punctuation - punctuation.definition.string - punctuation.definition.comment",
+            p.ansi(8),
+            none,
+        ),
+        ("keyword, storage", p.magenta(), none),
+        ("keyword.control", p.magenta(), italic),
+        ("keyword.operator", p.cyan(), none),
+        ("string", p.green(), none),
+        ("string.regexp", p.magenta(), none),
+        ("constant", p.yellow(), none),
+        ("constant.character", p.cyan(), none),
+        ("constant.character.escape", p.magenta(), none),
+        (
+            "entity.name.function, support.function, meta.function-call",
+            p.blue(),
+            none,
+        ),
+        (
+            "entity.name.type, entity.name.class, entity.name.struct, entity.name.enum",
+            p.yellow(),
+            none,
+        ),
+        ("support.type, support.class", p.yellow(), none),
+        (
+            "entity.name.namespace, entity.name.module",
+            p.yellow(),
+            italic,
+        ),
+        ("variable.parameter", p.magenta(), italic),
+        ("variable.language", p.red(), none),
+        ("variable.other.member", p.blue(), none),
+        ("entity.name.tag", p.blue(), none),
+        ("entity.other.attribute-name", p.yellow(), none),
+        ("markup.heading", p.red(), bold),
+        (
+            "punctuation.definition.list_item, punctuation.definition.list",
+            p.cyan(),
+            none,
+        ),
+        ("markup.bold", p.red(), bold),
+        ("markup.italic", p.red(), italic),
+        ("markup.raw", p.green(), none),
+        ("markup.quote", p.magenta(), none),
+        ("markup.underline.link", p.blue(), italic),
+        ("markup.inserted", p.green(), none),
+        ("markup.deleted", p.red(), none),
+        ("markup.changed", p.blue(), none),
+    ];
+    let color = |c: Rgb| Color {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+        a: 0xff,
+    };
+    SyntaxTheme {
+        name: Some("omarchy".to_string()),
+        settings: ThemeSettings {
+            foreground: Some(color(p.foreground())),
+            ..ThemeSettings::default()
+        },
+        scopes: rules
+            .into_iter()
+            .map(|(scope, fg, font_style)| ThemeItem {
+                scope: scope.parse::<ScopeSelectors>().expect("valid selector"),
+                style: StyleModifier {
+                    foreground: Some(color(fg)),
+                    background: None,
+                    font_style: Some(font_style),
+                },
+            })
+            .collect(),
+        ..SyntaxTheme::default()
+    }
 }
 
 /// The language named by a fence's info string: `rust` in "rust,ignore" or
@@ -47,7 +142,7 @@ pub fn highlight(code: &str, lang: &str, theme: &Theme, base: Style) -> Vec<Vec<
     let Some(syntax) = set.find_syntax_by_token(lang) else {
         return code.split('\n').map(plain).collect();
     };
-    let mut hl = HighlightLines::new(syntax, syntax_theme(theme.dark));
+    let mut hl = HighlightLines::new(syntax, syntax_theme(theme));
     let mut out = Vec::new();
     for line in LinesWithEndings::from(code) {
         let Ok(ranges) = hl.highlight_line(line, set) else {
@@ -110,6 +205,35 @@ mod tests {
         assert_eq!(language("rust,ignore"), "rust");
         assert_eq!(language("python {.numberLines}"), "python");
         assert_eq!(language(""), "");
+    }
+
+    #[test]
+    fn colors_code_from_an_omarchy_palette() {
+        let palette = Palette::parse(
+            "background = \"#1a1b26\"\nforeground = \"#a9b1d6\"\nred = \"#f7768e\"\n\
+             green = \"#9ece6a\"\nyellow = \"#e0af68\"\nblue = \"#7aa2f7\"\n\
+             magenta = \"#ad8ee6\"\ncyan = \"#449dab\"\nlighter_background = \"#24283b\"\n",
+        )
+        .unwrap();
+        let theme = Theme::new(crate::theme::Mode::Auto, true, Some(&palette));
+        assert!(theme.dark);
+        let rgb = |c: Rgb| theme.rgb(c.r, c.g, c.b);
+        assert_eq!(theme.code_bg, Some(rgb(palette.lighter_background())));
+
+        let line = &highlight(
+            "let s = \"hi\"; // note\n",
+            "rust",
+            &theme,
+            Style::default(),
+        )[0];
+        let fg = |text: &str| {
+            line.iter()
+                .find(|s| s.content.contains(text))
+                .and_then(|s| s.style.fg)
+        };
+        assert_eq!(fg("let"), Some(rgb(palette.magenta())));
+        assert_eq!(fg("hi"), Some(rgb(palette.green())));
+        assert_eq!(fg("note"), Some(rgb(palette.ansi(8))));
     }
 
     #[test]

@@ -8,7 +8,9 @@ mod grep;
 mod highlight;
 mod html;
 mod index;
+mod omarchy;
 mod open;
+mod palettes;
 mod render;
 mod safe;
 mod theme;
@@ -21,7 +23,7 @@ use doc::SourceSide;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use theme::{Mode, Theme};
+use theme::{Choice, Mode, Theme};
 
 /// Browse and read Markdown in the terminal.
 ///
@@ -61,9 +63,10 @@ struct Args {
     #[arg(short, long)]
     plain: bool,
 
-    /// Color theme
-    #[arg(long, value_enum)]
-    theme: Option<Mode>,
+    /// Color theme: auto, dark, light, or one of Omarchy's themes, like
+    /// tokyo-night, which colors everything
+    #[arg(long)]
+    theme: Option<Choice>,
 }
 
 fn main() -> ExitCode {
@@ -83,8 +86,20 @@ fn run(args: Args) -> io::Result<()> {
     let interactive = io::stdout().is_terminal() && !args.plain;
     // Flags win over the config file.
     let config = config::load();
-    let mode = args.theme.or(config.theme).unwrap_or(Mode::Auto);
-    let theme = Theme::new(mode, !args.plain && !no_color);
+    let choice = args
+        .theme
+        .or(config.theme)
+        .unwrap_or(Choice::Mode(Mode::Auto));
+    let color = !args.plain && !no_color;
+    // On Omarchy the desktop's theme wins, unless code is asked to be
+    // plain dark or light.
+    let palette = (color && !matches!(choice, Choice::Mode(Mode::Dark | Mode::Light)))
+        .then(omarchy::palette)
+        .flatten();
+    let theme = match &palette {
+        Some(p) => Theme::new(Mode::Auto, color, Some(p)),
+        None => Theme::chosen(choice, color),
+    };
     let width = args.width.or(config.width).filter(|&w| w > 0);
     let all = args.all || config.all.unwrap_or(false);
 
@@ -100,8 +115,10 @@ fn run(args: Args) -> io::Result<()> {
             mouse: !args.no_mouse && config.mouse.unwrap_or(true),
             by_date: config.sort == Some(config::Sort::Date),
             outline: config.outline.unwrap_or(false),
+            choice,
+            omarchy: palette.is_some(),
         };
-        return tui::run(source, &theme, settings);
+        return tui::run(source, theme, settings);
     }
     // Relative links are checked against the document's directory.
     let (md, base) = match source {
@@ -116,7 +133,7 @@ fn run(args: Args) -> io::Result<()> {
         } => return list_files(&root, all),
     };
     let base = base.as_deref();
-    let lines = render::render(
+    let mut lines = render::render(
         &md,
         width.unwrap_or_else(terminal_width),
         &theme,
@@ -124,6 +141,9 @@ fn run(args: Args) -> io::Result<()> {
         base.map(files::site_root).as_deref(),
     )
     .lines;
+    for span in lines.iter_mut().flat_map(|l| &mut l.spans) {
+        span.style = theme.recolor(span.style);
+    }
     ansi::print(&lines, &mut io::stdout().lock())
 }
 

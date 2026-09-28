@@ -125,6 +125,7 @@ Anywhere:
 | `e` | Edit the file in `$VISUAL` or `$EDITOR`, at the line you're reading |
 | `y` `Y` | Copy the code block on screen, or the file's path |
 | `\` | Keep the file list on screen while reading |
+| `t` | Pick a color theme |
 | `?` | All of the above |
 
 Emacs keys work everywhere too: `Ctrl-N` `Ctrl-P` move down and up, `Ctrl-V` `Alt-V` a page, `Alt-<` `Alt->` to the ends, and `Ctrl-G` is `Esc`. In a document, `Ctrl-S` and `Ctrl-R` search forward and backward; while you type, they go to the next and previous match, and `Ctrl-S` on an empty search repeats the last one.
@@ -141,12 +142,20 @@ The header shows how the document on screen is connected, like `3 linked docs ·
 
 `y` and `Y` use the system clipboard (`pbcopy`, `wl-copy`, `xclip`, `xsel` or `clip`). Over SSH they ask your terminal to do the copying instead, with an OSC 52 escape sequence, so the text lands on your own machine. Most modern terminals support this; in tmux, it needs `set -g set-clipboard on`. macOS Terminal doesn't support it.
 
+### Colors
+
+`t` picks a color theme: the screen changes as you move through the list, `Enter` keeps the one you're on and saves it in `~/.lsmd/config.toml`, and `Esc` goes back. The themes are [Omarchy](https://omarchy.org)'s: `tokyo-night`, `catppuccin`, `catppuccin-latte`, `gruvbox`, `nord`, `rose-pine`, `kanagawa`, `everforest` and more. A theme colors everything, background included, and your terminal goes back to its own colors when `lsmd` exits. `--theme` picks one too.
+
+Without one (`auto`, `dark` or `light`), text uses your terminal's own colors, and code is colored by a built-in dark or light theme; `auto` picks whichever suits the terminal's background.
+
+On Omarchy, the desktop's theme wins: code takes its colors from it, and changes when you switch themes, even in a document you already have open. `theme = "dark"` or `"light"` turns this off.
+
 ## Configuration
 
 Defaults for the options can go in `~/.lsmd/config.toml`. Everything is optional, and flags win over it:
 
 ```toml
-theme = "dark"          # auto, dark or light (auto asks the terminal)
+theme = "dark"          # auto, dark, light or a theme like "tokyo-night"
 width = 100             # wrap text at 100 columns (0: the terminal's width)
 source = true           # start with the source shown beside the text
 source-side = "left"    # left or right

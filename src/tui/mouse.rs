@@ -11,7 +11,7 @@ use ratatui::layout::Position;
 /// Lines per wheel notch.
 const WHEEL: isize = 3;
 
-impl App<'_> {
+impl App {
     pub(super) fn mouse(&mut self, m: MouseEvent) {
         let (x, y) = (m.column, m.row);
         let down = match m.kind {

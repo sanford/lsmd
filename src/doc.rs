@@ -196,6 +196,12 @@ impl Doc {
         self.source_width = 0;
     }
 
+    /// Renders both views again when next drawn, for a new theme.
+    pub fn restyle(&mut self) {
+        self.width = 0;
+        self.source_width = 0;
+    }
+
     /// Wraps the rendered view for `width`, keeping the same part of the
     /// document at the top.
     fn layout(&mut self, width: usize, theme: &Theme) {
