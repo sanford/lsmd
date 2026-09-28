@@ -1127,39 +1127,26 @@ fn draw_help(f: &mut Frame) {
     const KEYS: &[(&str, &str)] = &[
         ("↑↓ j k", "Move / scroll"),
         ("⏎ l →", "Read the selected file"),
-        (
-            "esc ⌫",
-            "Back to the last document, then the list; quits from the list",
-        ),
+        ("esc ⌫", "Back a document, then to the list (quits there)"),
         ("q", "Quit"),
         ("← → h l", "Scroll long code lines sideways (0: back)"),
         ("] [", "Next / previous heading"),
-        (
-            "o",
-            "Outline: ↑↓ through the headings (the text follows), / filter, ⏎ read there",
-        ),
-        (
-            "O",
-            "Keep the outline beside the document, following as you read",
-        ),
-        ("L", "Links: what this links to, and what links here"),
+        ("o", "Outline: the text follows as you move (/ filters)"),
+        ("O", "Keep the outline open beside the text"),
+        ("L", "Links: to and from this document"),
         ("s", "Search the text of every file"),
         ("e", "Edit the file in $EDITOR, at this point"),
-        ("y Y", "Copy the code block on screen / the file's path"),
+        ("y Y", "Copy the code on screen / the file's path"),
         ("/ n N", "Search; next / previous match"),
-        (
-            "^s ^r",
-            "Search forward / back; while typing, next / previous match",
-        ),
+        ("^s ^r", "Search forward / back; typing: next / previous"),
         ("f", "Follow a link (type the letters shown on it)"),
         ("⇧↓ ⇧↑ J K", "Page down / up"),
-        (
-            "^n ^p ^v M-v",
-            "Emacs: down / up, page down / up (M-< M->: ends, ^g: esc)",
-        ),
         ("space b", "Page down / up (the preview, in the list)"),
         ("d u", "Half page down / up"),
         ("g G", "Top / bottom"),
+        ("^n ^p", "Emacs: down / up"),
+        ("^v M-v", "Emacs: page down / up"),
+        ("M-< M->", "Emacs: top / bottom (^g: esc)"),
         ("/", "Filter files (fuzzy)"),
         ("m", "Sort by name or by date"),
         ("\\", "Show or hide the list while reading"),
@@ -1169,7 +1156,7 @@ fn draw_help(f: &mut Frame) {
         ("Q", "Quit from anywhere"),
     ];
     let key_width = KEYS.iter().map(|(k, _)| wrap::width(k)).max().unwrap_or(0);
-    let mut lines: Vec<Line> = KEYS
+    let rows: Vec<Line> = KEYS
         .iter()
         .map(|(k, what)| {
             let pad = key_width - wrap::width(k);
@@ -1179,9 +1166,10 @@ fn draw_help(f: &mut Frame) {
             ])
         })
         .collect();
+    let area = f.area();
+    let mut lines = help_columns(rows, area);
     lines.push(Line::default());
     lines.push(Line::from("Press any key to close").dim());
-    let area = f.area();
     let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4).min(area.width);
     let height = (lines.len() as u16 + 2).min(area.height);
     let rect = Rect {
@@ -1227,6 +1215,35 @@ fn section_trail(section: &[String], room: usize) -> Option<String> {
     }
     trail.push('…');
     Some(trail)
+}
+
+/// The help's rows, in one column, or in two side by side when one is too
+/// tall for the screen and two fit across it.
+fn help_columns(rows: Vec<Line<'static>>, area: Rect) -> Vec<Line<'static>> {
+    // The border and padding, and the blank line and "Press any key" below.
+    const FRAME_HEIGHT: usize = 4;
+    const FRAME_WIDTH: usize = 4;
+    const GAP: usize = 4;
+    let column = rows.iter().map(Line::width).max().unwrap_or(0);
+    let tall = rows.len() + FRAME_HEIGHT > usize::from(area.height);
+    if !tall || 2 * column + GAP + FRAME_WIDTH > usize::from(area.width) {
+        return rows;
+    }
+    let half = rows.len().div_ceil(2);
+    let mut rows = rows.into_iter();
+    let left: Vec<Line> = rows.by_ref().take(half).collect();
+    let right: Vec<Line> = rows.collect();
+    let mut right = right.into_iter();
+    left.into_iter()
+        .map(|mut line| {
+            if let Some(r) = right.next() {
+                let pad = column - line.width() + GAP;
+                line.spans.push(Span::raw(" ".repeat(pad)));
+                line.spans.extend(r.spans);
+            }
+            line
+        })
+        .collect()
 }
 
 /// Emacs's movement keys, as the keys they stand for, so they work
@@ -1336,6 +1353,21 @@ mod tests {
         // Plain letters, and < > without Alt (the divider), are left alone.
         assert_eq!(k('n', KeyModifiers::NONE), KeyCode::Char('n'));
         assert_eq!(k('<', KeyModifiers::SHIFT), KeyCode::Char('<'));
+    }
+
+    #[test]
+    fn help_goes_to_two_columns_only_when_too_short() {
+        let rows =
+            || -> Vec<Line<'static>> { (0..10).map(|i| Line::from(format!("row {i}"))).collect() };
+        let area = |width, height| Rect::new(0, 0, width, height);
+        // Room for all of it: one column.
+        assert_eq!(help_columns(rows(), area(80, 14)).len(), 10);
+        // Too short: two columns, the second half beside the first.
+        let two = help_columns(rows(), area(80, 13));
+        assert_eq!(two.len(), 5);
+        assert_eq!(text(&two[0]), "row 0    row 5");
+        // Too short, but too narrow for two: one column, clipped.
+        assert_eq!(help_columns(rows(), area(17, 13)).len(), 10);
     }
 
     #[test]
