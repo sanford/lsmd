@@ -1132,11 +1132,11 @@ fn draw_help(f: &mut Frame) {
         ("] [", "Next / previous heading"),
         (
             "o",
-            "Outline: ↑↓ through the headings (the text follows), ⏎ read there",
+            "Outline: ↑↓ through the headings (the text follows), / filter, ⏎ read there",
         ),
         (
             "O",
-            "Outline beside the document: ↑↓ move, / filter, ⏎ read there",
+            "Keep the outline beside the document, following as you read",
         ),
         ("L", "Links: what this links to, and what links here"),
         ("s", "Search the text of every file"),
