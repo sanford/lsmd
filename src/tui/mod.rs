@@ -1147,7 +1147,10 @@ fn draw_help(f: &mut Frame) {
         ("e", "Edit the file in $EDITOR, at this point"),
         ("y Y", "Copy the code block on screen / the file's path"),
         ("/ n N", "Search; next / previous match"),
-        ("^s ^r", "Emacs search: while typing, next / previous match"),
+        (
+            "^s ^r",
+            "Search forward / back; while typing, next / previous match",
+        ),
         ("f", "Follow a link (type the letters shown on it)"),
         ("⇧↓ ⇧↑ J K", "Page down / up"),
         (
