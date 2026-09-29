@@ -57,7 +57,7 @@ jobs:
       - run: |
           bin=target/${{ matrix.target }}/release/lsmd
           file "$bin"
-          file "$bin" | grep -q 'statically linked'
+          file "$bin" | grep -qE 'statically linked|static-pie linked'
           "$bin" --version | grep -qx "lsmd ${TAG#v}"
       # With the README and the licenses, as the Windows zip has them.
       - run: |
