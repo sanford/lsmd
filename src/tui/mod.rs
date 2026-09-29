@@ -26,12 +26,18 @@ use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, List, ListItem, ListState, Padding, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
+use ratatui_image::picker::Picker;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
+
+/// How long pictures wait after moving before they're drawn in full.
+const FIGURE_SETTLE: Duration = Duration::from_millis(150);
+/// The most pictures kept ready to draw.
+const MAX_DRAWN: usize = 32;
 
 /// What to show.
 pub enum Source {
@@ -59,6 +65,8 @@ pub struct Settings {
     pub by_date: bool,
     /// Open documents with the outline pane beside them.
     pub outline: bool,
+    /// Show diagrams as pictures, where the terminal can.
+    pub images: bool,
     /// The theme asked for, by flag or config.
     pub choice: Choice,
     /// Colors come from Omarchy's theme, and follow it.
@@ -83,6 +91,12 @@ pub fn run(source: Source, theme: Theme, settings: Settings) -> io::Result<()> {
     app.split = settings.split;
     app.source_right = settings.source_side == SourceSide::Right;
     let mut terminal = ratatui::init();
+    if settings.images && app.theme.color {
+        app.picker = crate::figure::picker();
+        if app.picker.is_some() {
+            crate::picture::enable();
+        }
+    }
     app.mouse_on = settings.mouse;
     app.by_time = settings.by_date;
     app.outline_pane = settings.outline;
@@ -246,6 +260,15 @@ struct App {
     grep: Option<(Receiver<Vec<crate::grep::Hit>>, String)>,
     /// Filtering, the search of the files' text.
     text_search: found::TextSearch,
+    /// How the terminal draws pictures, if it can.
+    picker: Option<Picker>,
+    /// Pictures made ready to draw, by diagram, columns and rows.
+    drawn: HashMap<(u64, usize, usize), crate::figure::Drawn>,
+    /// The document on screen and how far it's scrolled, and when that
+    /// last changed: pictures are drawn softly while it's moving.
+    figure_at: Option<(Option<PathBuf>, usize)>,
+    figure_moved: Option<Instant>,
+    figure_moving: bool,
     docs: HashMap<PathBuf, Doc>,
 }
 
@@ -309,6 +332,11 @@ impl App {
             grep: None,
             mouse_on: false,
             text_search: Default::default(),
+            picker: None,
+            drawn: HashMap::new(),
+            figure_at: None,
+            figure_moved: None,
+            figure_moving: false,
             docs: HashMap::new(),
         };
         match source {
@@ -348,6 +376,7 @@ impl App {
             // While scanning or indexing, wake up now and then to show
             // what's new.
             let busy = self.scan.is_some() || self.indexing.is_some() || self.grep.is_some();
+            let busy = busy || crate::picture::making() || self.figure_moving;
             let wait = if busy || self.text_search.busy() {
                 Duration::from_millis(50)
             } else if self.watch.is_some() {
@@ -392,6 +421,12 @@ impl App {
         self.restyle();
         self.receive_grep();
         self.receive_found();
+        if crate::picture::take_news() {
+            let text = self.text.iter_mut().map(|(_, doc)| doc);
+            for doc in self.docs.values_mut().chain(text) {
+                doc.relayout();
+            }
+        }
         if let Some(rx) = &self.indexing
             && let Ok(index) = rx.try_recv()
         {
@@ -1325,9 +1360,64 @@ impl App {
                 doc.draw(f, area, width, &theme, numbers);
             }
         }
+        self.draw_figures(f);
         // After the document, so it shows the section it's scrolled to.
         if let Some(pane) = pane {
             self.draw_outline_pane(f, pane);
+        }
+    }
+
+    /// The document's pictures, over the room it left for them.
+    fn draw_figures(&mut self, f: &mut Frame) {
+        if self.picker.is_none() {
+            return;
+        }
+        let path = self.current_path();
+        let Some((top, (area, figures))) = self.current().map(|d| (d.top(), d.figures())) else {
+            self.figure_moving = false;
+            return;
+        };
+        if figures.is_empty() {
+            self.figure_moving = false;
+            return;
+        }
+        // Pictures are sent again whenever they move, which is a lot for a
+        // terminal to keep up with at a key's repeat rate: moving again
+        // soon after the last move, they're shown with less detail, or not
+        // at all, till things settle.
+        let now = Instant::now();
+        let settled = self.figure_moved.is_none_or(|t| now - t >= FIGURE_SETTLE);
+        let at = Some((path, top));
+        if self.figure_at != at {
+            self.figure_moving = !settled;
+            self.figure_at = at;
+            self.figure_moved = Some(now);
+        } else if settled {
+            self.figure_moving = false;
+        }
+        let Some(picker) = &self.picker else { return };
+        if self.drawn.len() > MAX_DRAWN {
+            self.drawn.clear();
+        }
+        for (figure, y) in figures {
+            let key = (figure.picture.key, figure.cols, figure.rows);
+            if !self.drawn.contains_key(&key)
+                && let Some(drawn) = crate::figure::Drawn::new(
+                    picker,
+                    &figure.picture.image,
+                    figure.cols,
+                    figure.rows,
+                )
+            {
+                self.drawn.insert(key, drawn);
+            }
+            let Some(drawn) = self.drawn.get(&key) else {
+                continue;
+            };
+            if self.figure_moving && !drawn.has_soft() {
+                continue;
+            }
+            drawn.draw(f.buffer_mut(), area, figure.x as u16, y, self.figure_moving);
         }
     }
 

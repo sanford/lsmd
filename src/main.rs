@@ -1,8 +1,10 @@
 mod ansi;
 mod clipboard;
 mod config;
+mod diagram;
 mod doc;
 mod editor;
+mod figure;
 mod files;
 mod grep;
 mod highlight;
@@ -11,6 +13,7 @@ mod index;
 mod omarchy;
 mod open;
 mod palettes;
+mod picture;
 mod render;
 mod safe;
 mod theme;
@@ -115,6 +118,7 @@ fn run(args: Args) -> io::Result<()> {
             mouse: !args.no_mouse && config.mouse.unwrap_or(true),
             by_date: config.sort == Some(config::Sort::Date),
             outline: config.outline.unwrap_or(false),
+            images: config.images.unwrap_or(true),
             choice,
             omarchy: palette.is_some(),
         };

@@ -32,6 +32,27 @@ pub struct Rendered {
     /// Link targets, as written.
     pub links: Vec<String>,
     pub code_blocks: Vec<CodeBlock>,
+    /// Pictures to draw over the blank lines left for them.
+    pub figures: Vec<Figure>,
+}
+
+/// An image a document shows: its address, the size in pixels its `<img>`
+/// tag asked for, and what to show instead if it can't be.
+struct Wanted {
+    url: String,
+    size: (Option<u32>, Option<u32>),
+    alt: Vec<Piece>,
+}
+
+/// A picture in the document (a diagram or an image), the rendered line it
+/// starts on, how far in, and its size in cells.
+#[derive(Clone)]
+pub struct Figure {
+    pub picture: std::sync::Arc<crate::picture::Picture>,
+    pub line: usize,
+    pub x: usize,
+    pub cols: usize,
+    pub rows: usize,
 }
 
 pub struct CodeBlock {
@@ -107,6 +128,7 @@ pub fn render(
         inline_depth: std::cell::Cell::new(0),
         headings: Vec::new(),
         code_blocks: Vec::new(),
+        figures: Vec::new(),
         anchors: Anchorizer::new(),
     };
     for child in root.children() {
@@ -119,6 +141,7 @@ pub fn render(
         headings: r.headings,
         links: r.links.into_inner(),
         code_blocks: r.code_blocks,
+        figures: r.figures,
     }
 }
 
@@ -153,6 +176,7 @@ struct Renderer<'t> {
     links: RefCell<Vec<String>>,
     headings: Vec<Heading>,
     code_blocks: Vec<CodeBlock>,
+    figures: Vec<Figure>,
     anchors: Anchorizer,
 }
 
@@ -279,6 +303,7 @@ impl Renderer<'_> {
         let ast = node.data();
         match &ast.value {
             NodeValue::FrontMatter(text) => self.front_matter(text, ast.sourcepos.start.line),
+            NodeValue::Paragraph if self.pictures(node) => {}
             NodeValue::Paragraph => {
                 let pieces = self.inlines(node, Style::default());
                 self.para(&pieces);
@@ -299,7 +324,11 @@ impl Renderer<'_> {
             NodeValue::CodeBlock(code) => {
                 // Past the opening fence, if there is one.
                 let first = ast.sourcepos.start.line + usize::from(code.fenced);
-                self.code_block(&code.info, &code.literal, first);
+                if crate::diagram::is_mermaid(&code.info) {
+                    self.diagram(&code.info, &code.literal, first);
+                } else {
+                    self.code_block(&code.info, &code.literal, first);
+                }
                 self.gap();
             }
             NodeValue::HtmlBlock(html) => self.html_block(&html.literal),
@@ -424,6 +453,168 @@ impl Renderer<'_> {
         }
     }
 
+    /// A Mermaid diagram: room for its picture once it's drawn, if the
+    /// terminal can show one; until then, or if it can't be drawn, the code.
+    fn diagram(&mut self, info: &str, source: &str, first: usize) {
+        use crate::diagram::Look;
+        use crate::picture::State;
+        let background = match self.theme.code_bg {
+            Some(ratatui::style::Color::Rgb(r, g, b)) => Some([r, g, b]),
+            _ => None,
+        };
+        let look = Look {
+            dark: self.theme.dark,
+            background,
+        };
+        let state = self
+            .theme
+            .color
+            .then(|| crate::picture::diagram(source, look))
+            .flatten();
+        match state {
+            Some(State::Ready(diagram)) => {
+                let start = self.figure(diagram, (None, None));
+                // `y` copies the diagram's source.
+                self.code_blocks.push(CodeBlock {
+                    lines: start..self.out.len(),
+                    lang: "mermaid".into(),
+                    code: source.to_string(),
+                });
+            }
+            Some(State::Failed(why)) => {
+                self.code_block(info, source, first);
+                let note = format!("Couldn't draw this diagram: {why}");
+                self.para(&[Piece::Text(note, self.theme.dim())]);
+            }
+            _ => self.code_block(info, source, first),
+        }
+    }
+
+    /// Blank lines for `picture` to be drawn over, centred in the room
+    /// inside any quote or list, at the `size` in pixels asked for (either
+    /// way), if any, or else its own. Returns the first.
+    fn figure(
+        &mut self,
+        picture: std::sync::Arc<crate::picture::Picture>,
+        size: (Option<u32>, Option<u32>),
+    ) -> usize {
+        self.flush_gap();
+        let avail = self.avail();
+        let (pw, ph) = (
+            u64::from(picture.width.max(1)),
+            u64::from(picture.height.max(1)),
+        );
+        let (w, h) = match size {
+            (Some(w), Some(h)) => (w, h),
+            (Some(w), None) => (w, (u64::from(w) * ph / pw) as u32),
+            (None, Some(h)) => ((u64::from(h) * pw / ph) as u32, h),
+            (None, None) => (picture.width, picture.height),
+        };
+        let (cols, rows) = crate::figure::cells(w.max(1), h.max(1), avail, crate::figure::MAX_ROWS);
+        let start = self.out.len();
+        self.figures.push(Figure {
+            picture,
+            line: start,
+            x: self.prefix_width() + (avail - cols) / 2,
+            cols,
+            rows,
+        });
+        for _ in 0..rows {
+            self.emit(Vec::new());
+        }
+        start
+    }
+
+    /// A paragraph of nothing but images (Markdown's or `<img>` tags,
+    /// each maybe a link): see [`Renderer::images`]. False if it has
+    /// anything else.
+    fn pictures(&mut self, node: Node<'_>) -> bool {
+        let mut images = Vec::new();
+        for child in node.children() {
+            match &child.data().value {
+                NodeValue::Image(_) => images.push(self.wanted(child)),
+                // A linked image, and nothing else in the link.
+                NodeValue::Link(_)
+                    if child.children().count() == 1
+                        && child
+                            .first_child()
+                            .is_some_and(|c| matches!(c.data().value, NodeValue::Image(_))) =>
+                {
+                    images.extend(child.first_child().map(|c| self.wanted(c)));
+                }
+                NodeValue::HtmlInline(tag) => match crate::html::inline_img(tag) {
+                    Some(img) => images.push(self.wanted_html(img)),
+                    None if crate::html::invisible(tag) => {}
+                    None => return false,
+                },
+                NodeValue::Text(t) if t.trim().is_empty() => {}
+                NodeValue::SoftBreak | NodeValue::LineBreak => {}
+                _ => return false,
+            }
+        }
+        self.images(images)
+    }
+
+    /// A Markdown image, to show.
+    fn wanted(&self, image: Node<'_>) -> Wanted {
+        let url = match &image.data().value {
+            NodeValue::Image(link) => link.url.clone(),
+            _ => String::new(),
+        };
+        let mut alt = Vec::new();
+        self.inline(image, Style::default(), &mut alt);
+        Wanted {
+            url,
+            size: (None, None),
+            alt,
+        }
+    }
+
+    /// An `<img>` tag's image, to show.
+    fn wanted_html(&self, img: crate::html::Img) -> Wanted {
+        let label = if img.alt.is_empty() {
+            "[image]".into()
+        } else {
+            format!("[image: {}]", img.alt)
+        };
+        Wanted {
+            url: img.src,
+            size: (img.width, img.height),
+            alt: vec![Piece::Text(label, self.theme.key())],
+        }
+    }
+
+    /// Images, one after another: the pictures of those that are files here
+    /// and ready, and the rest as text. False, drawing nothing, if none is
+    /// ready yet (though asking for them gets them ready).
+    fn images(&mut self, images: Vec<Wanted>) -> bool {
+        use crate::picture::State;
+        if images.is_empty() || !self.theme.color {
+            return false;
+        }
+        let states: Vec<Option<State>> = images
+            .iter()
+            .map(|image| {
+                let base = self.base?;
+                let path = local_path(&image.url).filter(|p| !p.is_empty())?;
+                crate::picture::file(&local_target(base, self.site, &path))
+            })
+            .collect();
+        if !states.iter().any(|s| matches!(s, Some(State::Ready(_)))) {
+            return false;
+        }
+        for (image, state) in images.into_iter().zip(states) {
+            match state {
+                Some(State::Ready(picture)) => {
+                    self.figure(picture, image.size);
+                }
+                _ => self.para(&image.alt),
+            }
+            self.gap();
+        }
+        true
+    }
+
     /// A block of code whose first line is source line `first`.
     fn code_block(&mut self, info: &str, literal: &str, first: usize) {
         self.flush_gap();
@@ -491,6 +682,17 @@ impl Renderer<'_> {
     }
 
     fn html_block(&mut self, literal: &str) {
+        // A centred logo and the like: the pictures, if they're here.
+        let left;
+        let mut literal = literal;
+        if let Some((images, rest)) = crate::html::leading_images(literal, self.theme.dark) {
+            let images = images.into_iter().map(|i| self.wanted_html(i)).collect();
+            if self.images(images) {
+                // Then what's after them: a name under a logo.
+                left = rest;
+                literal = &left;
+            }
+        }
         let pieces = crate::html::block(literal, self.theme);
         if !pieces.is_empty() {
             self.para(&pieces);
@@ -951,6 +1153,137 @@ mod tests {
                 "   └───┘",
             ]
         );
+    }
+
+    #[test]
+    fn diagrams_show_as_code_until_drawn_then_as_room_for_the_picture() {
+        crate::picture::enable();
+        let md = "Before.\n\n```mermaid\nflowchart LR; Draw-->Me\n```\n\nAfter.\n";
+        let theme = Theme::new(crate::theme::Mode::Dark, true, None);
+        let first = render(md, 80, &theme, None, None);
+        assert!(first.figures.is_empty(), "not drawn yet: the code");
+        assert!(first.lines.iter().any(|l| l.text().contains("Draw-->Me")));
+        let start = std::time::Instant::now();
+        while crate::picture::making() && start.elapsed().as_secs() < 10 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let drawn = render(md, 80, &theme, None, None);
+        let [figure] = &drawn.figures[..] else {
+            panic!("one picture");
+        };
+        // Blank lines for it, the first numbered with the fence's line.
+        let rows = &drawn.lines[figure.line..figure.line + figure.rows];
+        assert!(rows.iter().all(|l| l.text().trim().is_empty()));
+        assert_eq!(rows[0].line, Some(3));
+        assert!(figure.cols <= 80 && figure.x + figure.cols <= 80);
+        assert!(
+            drawn.lines[figure.line + figure.rows..]
+                .iter()
+                .any(|l| l.text() == "After.")
+        );
+        // `y` copies its source.
+        assert_eq!(drawn.code_blocks[0].code, "flowchart LR; Draw-->Me\n");
+
+        // One that can't be drawn: the code, and why.
+        let bad = "```mermaid\nnot a diagram\n```\n";
+        render(bad, 80, &theme, None, None);
+        while crate::picture::making() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let text = plain_themed(bad, &theme);
+        assert!(text.contains("not a diagram"));
+        assert!(text.contains("Couldn't draw this diagram"), "{text}");
+    }
+
+    #[test]
+    fn paragraphs_of_images_show_the_pictures() {
+        crate::picture::enable();
+        let dir = std::env::temp_dir().join(format!("lsmd-images-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("img")).unwrap();
+        image::RgbaImage::from_pixel(400, 200, image::Rgba([0, 120, 200, 255]))
+            .save(dir.join("img/shot.png"))
+            .unwrap();
+        let md = "# T\n\n![A shot](img/shot.png)\n\nSee ![inline](img/shot.png) here.\n\n![web](https://example.com/a.png)\n\n[![linked](img/shot.png)](https://example.com) ![gone](img/missing.png)\n";
+        let theme = Theme::new(crate::theme::Mode::Dark, true, None);
+        let draw = || render(md, 80, &theme, Some(&dir), None);
+        assert!(draw().figures.is_empty(), "not loaded yet: the alt text");
+        let start = std::time::Instant::now();
+        while crate::picture::making() && start.elapsed().as_secs() < 10 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let rendered = draw();
+        let text: Vec<String> = rendered.lines.iter().map(|l| l.text()).collect();
+        // The picture alone, and the linked one; the missing one as text.
+        assert_eq!(rendered.figures.len(), 2);
+        let first = &rendered.figures[0];
+        assert_eq!(rendered.lines[first.line].line, Some(3));
+        assert!(!text.iter().any(|l| l.contains("[image: A shot]")));
+        assert!(
+            text.iter().any(|l| l.contains("See [image: inline]")),
+            "in a sentence: text"
+        );
+        assert!(
+            text.iter().any(|l| l.contains("[image: web]")),
+            "not a file here: text"
+        );
+        assert!(text.iter().any(|l| l.contains("[image: gone]")));
+        // Its own size: 400×200 pixels, in 10×20 cells, is 40 by 10.
+        assert_eq!((first.cols, first.rows), (40, 10));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn img_tags_show_their_pictures() {
+        crate::picture::enable();
+        let dir = std::env::temp_dir().join(format!("lsmd-img-tags-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, color) in [("light.png", 250), ("dark.png", 20)] {
+            image::RgbaImage::from_pixel(800, 400, image::Rgba([color, color, color, 255]))
+                .save(dir.join(name))
+                .unwrap();
+        }
+        let md = r#"<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="dark.png">
+    <img src="light.png" alt="Logo" width="200">
+  </picture>
+</p>
+
+Text first.
+
+<a href="x"><img src="light.png" alt="inline"></a>
+
+<p><img src="light.png"> and words</p>
+"#;
+        let theme = Theme::new(crate::theme::Mode::Dark, true, None);
+        let draw = || render(md, 80, &theme, Some(&dir), None);
+        draw();
+        while crate::picture::making() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let rendered = draw();
+        let [logo, inline, _before_words] = &rendered.figures[..] else {
+            panic!("three pictures, not {}", rendered.figures.len());
+        };
+        // The dark screen's source, at the 200 pixels asked for: 20 by 5
+        // in 10×20 cells.
+        assert_eq!(logo.picture.image.to_rgba8().get_pixel(0, 0).0[0], 20);
+        assert_eq!((logo.cols, logo.rows), (20, 5));
+        assert_eq!(rendered.lines[logo.line].line, Some(1));
+        assert_eq!(inline.cols, 80, "its own size, to the width there is");
+        // Before words, a picture, then the words.
+        let text: Vec<String> = rendered.lines.iter().map(|l| l.text()).collect();
+        assert!(text.iter().any(|l| l.trim() == "and words"), "{text:?}");
+        assert!(!text.iter().any(|l| l.contains("[image]")), "{text:?}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn plain_themed(md: &str, theme: &Theme) -> String {
+        render(md, 80, theme, None, None)
+            .lines
+            .iter()
+            .map(|l| l.text() + "\n")
+            .collect()
     }
 
     #[test]

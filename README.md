@@ -30,7 +30,7 @@ Documentation piles up. A project that's been worked on for a while, especially 
 
 **Stays current.** Documents reload as they're edited, keeping your place, so `lsmd` works beside your editor, or beside an agent that's writing. `e` opens your editor at the line you're reading.
 
-It reads well, too. Text uses the full width of the terminal, and tables, code (long lines wrap, marked `↪`, so there's no scrolling sideways), task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `Tab` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading.
+It reads well, too. Text uses the full width of the terminal, and tables, code (long lines wrap, marked `↪`, so there's no scrolling sideways), task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `Tab` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading. Mermaid diagrams, and images on their own line that are files in the project (PNG, JPEG, GIF, WebP or SVG), are drawn as pictures in terminals that can show them (iTerm2, Kitty, WezTerm, Ghostty and those with Sixel); elsewhere, and in tmux, diagrams stay as code and images as their descriptions. Images from the web aren't fetched.
 
 `lsmd` runs on macOS, Linux and Windows. When its output isn't a terminal, `lsmd FILE` prints the rendered document and `lsmd` lists the files, for scripts.
 
@@ -169,6 +169,7 @@ mouse = false           # leave the mouse to the terminal
 all = true              # list hidden and .gitignored files too
 sort = "date"           # name or date
 outline = true          # show the outline beside documents
+images = false          # show diagrams as code and images as text
 ```
 
 ## License

@@ -113,6 +113,140 @@ pub fn inline(tag: &str, theme: &Theme) -> Option<Piece> {
     }
 }
 
+/// An image in HTML: where it is, its alt text, and the size asked for.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Img {
+    pub src: String,
+    pub alt: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+/// The images a block of HTML starts with, before any text (in paragraphs,
+/// links, headings and the like), and the rest of it without them: a logo
+/// over a project's name. `None` if it doesn't start with any. In a
+/// `<picture>`, the source for a `dark` (or light) screen wins.
+pub fn leading_images(html: &str, dark: bool) -> Option<(Vec<Img>, String)> {
+    let mut images = Vec::new();
+    // Where the images' tags are, to leave out of the rest.
+    let mut taken = Vec::new();
+    let mut text = false;
+    let mut stack: Vec<String> = Vec::new();
+    // Inside a `<picture>`: the source for this screen, if it has one.
+    let mut chosen: Option<String> = None;
+    let mut rest = html;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("<!--") {
+            rest = after.find("-->").map_or("", |i| &after[i + 3..]);
+            continue;
+        }
+        let tag_start = rest.starts_with('<')
+            && rest[1..].starts_with(|c: char| c.is_ascii_alphabetic() || c == '/' || c == '!');
+        if tag_start && let Some(end) = rest.find('>') {
+            let at = html.len() - rest.len();
+            let tag = &rest[1..end];
+            rest = &rest[end + 1..];
+            let name = tag_name(tag);
+            if tag.starts_with('/') {
+                if name == "picture" {
+                    chosen = None;
+                }
+                if let Some(i) = stack.iter().rposition(|t| *t == name) {
+                    stack.truncate(i);
+                }
+                continue;
+            }
+            match name.as_str() {
+                "img" if !text => {
+                    let mut img = img(tag);
+                    if let Some(src) = chosen.take() {
+                        img.src = src;
+                    }
+                    images.push(img);
+                    taken.push(at..at + end + 1);
+                }
+                "source" if stack.iter().any(|t| t == "picture") => {
+                    let media = attr(tag, "media").unwrap_or_default().to_ascii_lowercase();
+                    let fits = if dark {
+                        media.contains("dark")
+                    } else {
+                        media.contains("light")
+                    };
+                    let src = attr(tag, "srcset").and_then(|s| {
+                        let first = s.split(',').next()?.split_whitespace().next()?;
+                        Some(decode(first))
+                    });
+                    if fits && src.is_some() {
+                        chosen = src;
+                    }
+                }
+                _ if !tag.ends_with('/') && !is_void(&name) => stack.push(name),
+                _ => {}
+            }
+            continue;
+        }
+        let first = rest.chars().next().map_or(1, char::len_utf8);
+        let end = rest[first..].find('<').map_or(rest.len(), |i| i + first);
+        let run = &rest[..end];
+        rest = &rest[end..];
+        let hidden = stack.iter().any(|t| HIDDEN.contains(&t.as_str()));
+        if !hidden && !decode(run).trim().is_empty() {
+            if images.is_empty() {
+                return None;
+            }
+            text = true;
+        }
+    }
+    if images.is_empty() {
+        return None;
+    }
+    let mut left = String::new();
+    let mut from = 0;
+    for range in taken {
+        left.push_str(&html[from..range.start]);
+        from = range.end;
+    }
+    left.push_str(&html[from..]);
+    Some((images, left))
+}
+
+/// The image an inline `<img …>` tag shows, if that's what it is.
+pub fn inline_img(tag: &str) -> Option<Img> {
+    let inner = tag.trim().strip_prefix('<')?.strip_suffix('>')?;
+    (tag_name(inner) == "img").then(|| img(inner))
+}
+
+/// Whether an inline tag shows nothing: `<a …>`, `</a>` and the like.
+pub fn invisible(tag: &str) -> bool {
+    let Some(inner) = tag
+        .trim()
+        .strip_prefix('<')
+        .and_then(|t| t.strip_suffix('>'))
+    else {
+        return false;
+    };
+    !matches!(tag_name(inner).as_str(), "img" | "br" | "hr")
+}
+
+fn img(tag: &str) -> Img {
+    // `200` or `200px`; not `50%`, which says nothing about the picture.
+    let pixels = |name| {
+        let value = attr(tag, name)?;
+        value
+            .trim()
+            .trim_end_matches("px")
+            .parse()
+            .ok()
+            .filter(|&n| n > 0)
+    };
+    Img {
+        src: decode(&attr(tag, "src").unwrap_or_default()),
+        alt: decode(&attr(tag, "alt").unwrap_or_default()),
+        width: pixels("width"),
+        height: pixels("height"),
+    }
+}
+
 fn image(tag: &str, theme: &Theme) -> Piece {
     let label = match attr(tag, "alt").filter(|a| !a.is_empty()) {
         Some(alt) => format!("[image: {}]", decode(&alt)),
@@ -332,6 +466,49 @@ mod tests {
             text(html),
             "[image: HyperFrames]\n[image: npm version] [image: CI]"
         );
+    }
+
+    #[test]
+    fn finds_blocks_of_nothing_but_images() {
+        let logo = r#"<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="dark.png 2x, big.png 3x">
+    <source media="(prefers-color-scheme: light)" srcset="light.png">
+    <img alt="Logo &amp; name" src="plain.png" width="200px" height="50%">
+  </picture>
+</p>"#;
+        let (dark, rest) = leading_images(logo, true).unwrap();
+        assert!(!rest.contains("<img"));
+        assert_eq!(
+            dark,
+            [Img {
+                src: "dark.png".into(),
+                alt: "Logo & name".into(),
+                width: Some(200),
+                height: None,
+            }]
+        );
+        assert_eq!(leading_images(logo, false).unwrap().0[0].src, "light.png");
+        let badges =
+            r#"<p><a href="x"><img src="a.svg" alt="a"></a> <img src='b.png'><!-- c --></p>"#;
+        let (images, _) = leading_images(badges, true).unwrap();
+        let srcs: Vec<String> = images.into_iter().map(|i| i.src).collect();
+        assert_eq!(srcs, ["a.svg", "b.png"]);
+        // A logo over a name: the logo, then the name, without the logo.
+        let logo = r#"<h1><img src="logo.svg" height="64"><br>Name <img src=x.png></h1>"#;
+        let (images, rest) = leading_images(logo, true).unwrap();
+        assert_eq!(images.len(), 1, "only the images before any text");
+        assert_eq!(rest, "<h1><br>Name <img src=x.png></h1>");
+        assert_eq!(text(&rest), "Name [image]");
+        assert_eq!(leading_images("<p>Text <img src=a.png></p>", true), None);
+        assert_eq!(leading_images("<div>no images</div>", true), None);
+        assert!(leading_images("<p><img src=a.png><script>x()</script></p>", true).is_some());
+        assert_eq!(
+            inline_img("<img src=\"a.png\" width=90>").unwrap().width,
+            Some(90)
+        );
+        assert!(inline_img("<br>").is_none());
+        assert!(invisible("</a>") && invisible("<a href=x>") && !invisible("<br/>"));
     }
 
     #[test]

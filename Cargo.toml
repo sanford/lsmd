@@ -29,6 +29,14 @@ notify-debouncer-mini = "0.7.0"
 toml = "1.1.6"
 # Pinned: new and single-maintainer, so updates get read before they land.
 omarchy-themes = "=0.1.0"
+# Mermaid diagrams: laid out as SVG, drawn to pixels by resvg (the version
+# mermaid-rs-renderer uses), and shown however the terminal can draw pictures.
+# Pinned: early and single-maintainer, like omarchy-themes.
+mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
+resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+base64 = "0.22"
 
 [dev-dependencies]
 insta = "1.48.0"

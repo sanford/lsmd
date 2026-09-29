@@ -8,7 +8,7 @@
 //! that renders as 10 lines, or a paragraph that wraps to 5, stays lined up.
 
 use crate::highlight;
-use crate::render::{CodeBlock, Heading, RLine, render};
+use crate::render::{CodeBlock, Figure, Heading, RLine, render};
 use crate::theme::Theme;
 use crate::wrap;
 use ratatui::Frame;
@@ -91,6 +91,7 @@ pub struct Doc {
     headings: Vec<Heading>,
     links: Vec<String>,
     code_blocks: Vec<CodeBlock>,
+    figures: Vec<Figure>,
     search: Option<Search>,
     /// Link hints on screen, while choosing a link to follow.
     pub hints: Vec<Hint>,
@@ -138,6 +139,7 @@ impl Doc {
             headings: Vec::new(),
             links: Vec::new(),
             code_blocks: Vec::new(),
+            figures: Vec::new(),
             search: None,
             hints: Vec::new(),
             pending_anchor: None,
@@ -198,6 +200,12 @@ impl Doc {
         self.source_width = 0;
     }
 
+    /// Lays the rendered view out again when next drawn: its diagrams have
+    /// been drawn.
+    pub fn relayout(&mut self) {
+        self.width = 0;
+    }
+
     /// Renders both views again when next drawn, for a new theme.
     pub fn restyle(&mut self) {
         self.width = 0;
@@ -222,6 +230,7 @@ impl Doc {
         self.headings = rendered.headings;
         self.links = rendered.links;
         self.code_blocks = rendered.code_blocks;
+        self.figures = rendered.figures;
         self.width = width;
         if let Some(query) = self.search.as_ref().map(|s| s.query.clone()) {
             self.find(&query);
@@ -712,6 +721,19 @@ impl Doc {
 
     pub fn top(&self) -> usize {
         self.top
+    }
+
+    /// Where the rendered text was last drawn, and its pictures that are
+    /// on screen, each with how far down it starts (above the top, if it's
+    /// scrolled partly off).
+    pub fn figures(&self) -> (Rect, Vec<(Figure, i32)>) {
+        let on_screen = self
+            .figures
+            .iter()
+            .map(|f| (f.clone(), f.line as i32 - self.top as i32))
+            .filter(|(f, y)| *y < self.height as i32 && y + f.rows as i32 > 0)
+            .collect();
+        (self.rendered_area, on_screen)
     }
 
     /// Scrolls the rendered text back to line `top`, as [`Doc::top`] gave it.

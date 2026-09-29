@@ -10,6 +10,7 @@
 //! all = true              # list hidden and .gitignored files too
 //! sort = "date"           # name or date
 //! outline = true          # show the outline pane beside documents
+//! images = false          # show diagrams as code and images as text
 //! ```
 
 use crate::doc::SourceSide;
@@ -35,6 +36,7 @@ pub struct Config {
     pub all: Option<bool>,
     pub sort: Option<Sort>,
     pub outline: Option<bool>,
+    pub images: Option<bool>,
 }
 
 pub fn path() -> Option<PathBuf> {
