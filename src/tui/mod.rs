@@ -1208,7 +1208,10 @@ impl App {
 
     fn pane(&self, title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
         // In the theme's accent, if it has one; dim without the keyboard.
-        let border = self.theme.frame.map_or(Style::new(), |c| Style::new().fg(c));
+        let border = self
+            .theme
+            .frame
+            .map_or(Style::new(), |c| Style::new().fg(c));
         let border = if focused { border } else { border.dim() };
         Block::bordered().title(title).border_style(border)
     }
@@ -2197,7 +2200,8 @@ mod tests {
         for (width, beside) in [(160, true), (100, false)] {
             let mut app = scanned(&dir, None);
             app.body_width = width;
-            app.list.select(app.row_of(&tree::Pick::File(dir.join("a.md"))));
+            app.list
+                .select(app.row_of(&tree::Pick::File(dir.join("a.md"))));
             app.key(tab);
             assert!(app.focus == Focus::Reader);
             assert_eq!(app.reading, Some(dir.join("a.md")));
