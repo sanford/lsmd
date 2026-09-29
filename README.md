@@ -59,10 +59,10 @@ Expand-Archive "$env:TEMP\lsmd.zip" $dir -Force
 
 Then open a new terminal and run `lsmd`.
 
-With Cargo, if you have a [Rust toolchain](https://rustup.rs):
+With Cargo, if you have a [Rust toolchain](https://rustup.rs), from [crates.io](https://crates.io/crates/lsmd):
 
 ```sh
-cargo install --git https://github.com/sanford/lsmd
+cargo install lsmd
 ```
 
 Or build from source:
