@@ -73,9 +73,13 @@ struct Args {
     #[arg(long)]
     theme: Option<Choice>,
 
+    /// Read settings from FILE instead of ~/.lsmd/config.toml
+    #[arg(long, value_name = "FILE")]
+    config: Option<PathBuf>,
+
     /// Open the config file in $VISUAL or $EDITOR, starting one with every
     /// setting in it if there isn't one
-    #[arg(long, exclusive = true)]
+    #[arg(long, conflicts_with_all = ["path", "completions", "man"])]
     edit_config: bool,
 
     /// Print the script that completes lsmd's options in SHELL
@@ -100,6 +104,16 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args) -> io::Result<()> {
+    if let Some(path) = args.config {
+        // Named on purpose, so unlike the usual one, it has to be there.
+        if !args.edit_config && !path.is_file() {
+            return Err(io::Error::new(
+                ErrorKind::NotFound,
+                format!("{}: no such config file", path.display()),
+            ));
+        }
+        config::choose(path);
+    }
     if args.edit_config {
         return edit_config();
     }

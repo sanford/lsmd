@@ -91,7 +91,19 @@ pub fn dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".lsmd"))
 }
 
+/// The config file `--config` named, if it did.
+static CHOSEN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Uses `path` instead of `~/.lsmd/config.toml`, for reading, saving the
+/// theme and editing.
+pub fn choose(path: PathBuf) {
+    let _ = CHOSEN.set(path);
+}
+
 pub fn path() -> Option<PathBuf> {
+    if let Some(path) = CHOSEN.get() {
+        return Some(path.clone());
+    }
     Some(dir()?.join("config.toml"))
 }
 

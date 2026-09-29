@@ -177,7 +177,7 @@ On Omarchy, the desktop's theme wins: code takes its colors from it, and changes
 
 ## Configuration
 
-Defaults for the options can go in `~/.lsmd/config.toml`. `lsmd --edit-config` opens it in your editor, starting it with every setting listed if there isn't one yet. Everything is optional, and flags win over it:
+Defaults for the options can go in `~/.lsmd/config.toml`. `lsmd --edit-config` opens it in your editor, starting it with every setting listed if there isn't one yet. `--config FILE` uses another file instead, for trying settings out or for testing; the theme `T` saves and `--edit-config` go to it too. Everything is optional, and flags win over it:
 
 ```toml
 theme = "dark"          # auto, dark, light or a theme like "tokyo-night"
