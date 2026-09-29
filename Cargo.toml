@@ -8,6 +8,9 @@ license = "GPL-3.0-or-later"
 readme = "README.md"
 keywords = ["markdown", "reader", "terminal", "tui", "preview"]
 categories = ["command-line-utilities", "text-processing"]
+# What building needs, not the README's screenshots or the dev scripts.
+# .cargo/config.toml only applies to builds from the repo anyway.
+exclude = ["docs/", ".github/", ".cargo/", "run.sh", "run.ps1"]
 
 [dependencies]
 # Only to turn on use-dev-tty: without it, macOS can't read keys from the

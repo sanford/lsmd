@@ -1,0 +1,90 @@
+name: Release
+
+# Linux binaries for a release, once it's published: static (musl), so one
+# file runs on any distribution. Run by hand with a tag to try it out, or
+# with `attach` to add them to that tag's release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build, like v0.8.0"
+        required: true
+      attach:
+        description: "Attach them to the tag's release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # As in CI: the owners' runs go straight through, anyone else's wait for
+  # an owner's approval. The owners are the TRUSTED_ACTORS repository
+  # variable, a JSON list.
+  approve:
+    if: ${{ !contains(fromJSON(vars.TRUSTED_ACTORS || '[]'), github.triggering_actor) }}
+    runs-on: ubuntu-latest
+    environment: approval
+    steps:
+      - run: echo "Approved for ${{ github.triggering_actor }}"
+
+  linux:
+    needs: approve
+    if: ${{ !cancelled() && (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            name: lsmd-linux-x64
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            name: lsmd-linux-arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          ref: ${{ env.TAG }}
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo test --locked --release --target ${{ matrix.target }}
+      - run: cargo build --locked --release --target ${{ matrix.target }}
+      # Static, and the version it says it is.
+      - run: |
+          bin=target/${{ matrix.target }}/release/lsmd
+          file "$bin"
+          file "$bin" | grep -q 'statically linked'
+          "$bin" --version | grep -qx "lsmd ${TAG#v}"
+      # With the README and the licenses, as the Windows zip has them.
+      - run: |
+          dir=${{ matrix.name }}
+          mkdir "$dir"
+          cp target/${{ matrix.target }}/release/lsmd README.md LICENSE "$dir/"
+          cp themes/LICENSE "$dir/LICENSE-themes"
+          tar czf "$dir.tar.gz" "$dir"
+          sha256sum "$dir.tar.gz" > "$dir.tar.gz.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}.tar.gz*
+          if-no-files-found: error
+
+  # Only here does anything get write access, and only to attach files.
+  attach:
+    needs: linux
+    if: ${{ github.event_name == 'release' || inputs.attach }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          merge-multiple: true
+      - run: gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber lsmd-linux-*.tar.gz*
