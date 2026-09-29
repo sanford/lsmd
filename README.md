@@ -48,7 +48,14 @@ With [Homebrew](https://brew.sh), on macOS and Linux:
 brew install sanford/tap/lsmd
 ```
 
-On Windows, download `lsmd-windows-x64.zip` from the [latest release](https://github.com/sanford/lsmd/releases/latest), unzip it, and put `lsmd.exe` in a folder on your `PATH`. It needs nothing else installed. Or, from PowerShell:
+On Windows, with [Scoop](https://scoop.sh):
+
+```powershell
+scoop bucket add sanford https://github.com/sanford/scoop-bucket
+scoop install sanford/lsmd
+```
+
+Or download `lsmd-windows-x64.zip` from the [latest release](https://github.com/sanford/lsmd/releases/latest), unzip it, and put `lsmd.exe` in a folder on your `PATH`. It needs nothing else installed. Or, from PowerShell:
 
 ```powershell
 $dir = "$env:LOCALAPPDATA\Programs\lsmd"
