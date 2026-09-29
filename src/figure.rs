@@ -48,11 +48,24 @@ pub fn picker() -> Option<Picker> {
         ..QueryStdioOptions::default()
     })
     .ok()?;
-    // iTerm2 says it can do Sixel too, and that's what gets picked, but
-    // its own pictures are what it draws best.
-    let iterm = |var| std::env::var(var).is_ok_and(|v| v.contains("iTerm"));
-    if iterm("TERM_PROGRAM") || iterm("LC_TERMINAL") {
+    // Which terminal this is. iTerm2's variables outlive it: a terminal
+    // started from iTerm2 (Terminal.app, say) inherits its LC_TERMINAL, so
+    // that only counts when nothing else says (over ssh, say).
+    let program = std::env::var("TERM_PROGRAM").ok();
+    let iterm = match &program {
+        Some(p) => p.contains("iTerm"),
+        None => std::env::var("LC_TERMINAL").is_ok_and(|v| v.contains("iTerm")),
+    };
+    if iterm {
+        // iTerm2 says it can do Sixel too, and that's what gets picked, but
+        // its own pictures are what it draws best.
         picker.set_protocol_type(ProtocolType::Iterm2);
+    } else if picker.protocol_type() == ProtocolType::Iterm2
+        && program.is_some_and(|p| !ITERM_LIKE.iter().any(|t| p.contains(t)))
+    {
+        // Guessed from iTerm2's leftover variables, in a terminal that says
+        // it's something else.
+        return None;
     }
     // Half blocks can't draw a diagram's labels legibly: better the text.
     if picker.protocol_type() == ProtocolType::Halfblocks {
@@ -62,6 +75,20 @@ pub fn picker() -> Option<Picker> {
     set_cell(size.width, size.height);
     Some(picker)
 }
+
+/// Terminals that draw iTerm2's pictures, by what they call themselves in
+/// `TERM_PROGRAM`: those ratatui-image counts.
+const ITERM_LIKE: &[&str] = &[
+    "iTerm",
+    "WezTerm",
+    "mintty",
+    "vscode",
+    "Tabby",
+    "Hyper",
+    "rio",
+    "Bobcat",
+    "WarpTerminal",
+];
 
 /// A picture made ready to draw at one size.
 pub enum Drawn {

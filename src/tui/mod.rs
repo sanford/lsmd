@@ -96,6 +96,9 @@ pub fn run(source: Source, theme: Theme, settings: Settings) -> io::Result<()> {
         if app.picker.is_some() {
             crate::picture::enable();
         }
+        // A terminal may print some of the questions it doesn't know: draw
+        // the whole screen afresh over them.
+        terminal.clear()?;
     }
     app.mouse_on = settings.mouse;
     app.by_time = settings.by_date;
