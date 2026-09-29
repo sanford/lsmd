@@ -76,7 +76,9 @@ jobs:
   # Only here does anything get write access, and only to attach files.
   attach:
     needs: linux
-    if: ${{ github.event_name == 'release' || inputs.attach }}
+    # Checked by hand: approve is skipped for the owners, and a skipped job
+    # upstream would otherwise skip this one too.
+    if: ${{ !cancelled() && needs.linux.result == 'success' && (github.event_name == 'release' || inputs.attach) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
