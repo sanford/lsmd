@@ -84,6 +84,8 @@ lsmd README.md | less -R   # not a terminal: print it rendered
 lsmd | wc -l         # not a terminal: list the files
 ```
 
+The list starts with the folders, each showing when its newest file changed and how many files are in it, and the files at the top level; every file in the folders follows, with its path. `→` goes into a folder, listing only what's in it, with `/` and `s` narrowed to it too, and `←` comes back up, to the folder you left; so does `..` at the top of the list. `Space` opens a folder in place, to look inside without going in. Filtering shows the best-matching folders above the matching files.
+
 `.gitignore`d and hidden files are left out; `-a` includes them. `-w 100` caps the text width. `-p` prints without colors, as does setting `NO_COLOR`.
 
 ### Keys
@@ -93,12 +95,14 @@ In the file list:
 | Key | |
 |---|---|
 | `↑` `↓` `j` `k` | Move; with `Shift` (`⇧↑` `⇧↓` `K` `J`), a page at a time |
-| `Enter` `→` `l` | Read the selected file |
+| `Enter` `→` `l` | Read the selected file, or go into the selected folder |
+| `←` `h` `Backspace` | Up a folder (or choose `..` at the top of the list) |
 | `/` | Filter the list by name (fuzzy) |
 | `s` | Search the text of every file in the list |
 | `m` | Sort by name or by date |
+| `Space` | On a folder: look inside without going in, or close it |
 | `Space` `b` | Page through the preview |
-| `q` `Esc` | Quit |
+| `q` `Esc` | Quit (`Esc` first clears the filter, then goes up a folder) |
 
 Reading:
 
@@ -125,7 +129,7 @@ Anywhere:
 | `e` | Edit the file in `$VISUAL` or `$EDITOR`, at the line you're reading |
 | `y` `Y` | Copy the code block on screen, or the file's path |
 | `\` | Keep the file list on screen while reading |
-| `t` | Pick a color theme |
+| `T` | Pick a color theme |
 | `?` | All of the above |
 
 Emacs keys work everywhere too: `Ctrl-N` `Ctrl-P` move down and up, `Ctrl-V` `Alt-V` a page, `Alt-<` `Alt->` to the ends, and `Ctrl-G` is `Esc`. In a document, `Ctrl-S` and `Ctrl-R` search forward and backward; while you type, they go to the next and previous match, and `Ctrl-S` on an empty search repeats the last one.
@@ -144,7 +148,7 @@ The header shows how the document on screen is connected, like `3 linked docs ·
 
 ### Colors
 
-`t` picks a color theme: the screen changes as you move through the list, `Enter` keeps the one you're on and saves it in `~/.lsmd/config.toml`, and `Esc` goes back. The themes are [Omarchy](https://omarchy.org)'s: `tokyo-night`, `catppuccin`, `catppuccin-latte`, `gruvbox`, `nord`, `rose-pine`, `kanagawa`, `everforest` and more. A theme colors everything, background included, and your terminal goes back to its own colors when `lsmd` exits. `--theme` picks one too.
+`T` picks a color theme: the screen changes as you move through the list, `Enter` keeps the one you're on and saves it in `~/.lsmd/config.toml`, and `Esc` goes back. The themes are [Omarchy](https://omarchy.org)'s: `tokyo-night`, `catppuccin`, `catppuccin-latte`, `gruvbox`, `nord`, `rose-pine`, `kanagawa`, `everforest` and more. A theme colors everything, background included, and your terminal goes back to its own colors when `lsmd` exits. `--theme` picks one too.
 
 Without one (`auto`, `dark` or `light`), text uses your terminal's own colors, and code is colored by a built-in dark or light theme; `auto` picks whichever suits the terminal's background.
 

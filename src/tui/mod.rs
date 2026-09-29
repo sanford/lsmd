@@ -7,6 +7,7 @@ mod outline;
 mod picker;
 mod search_all;
 mod themes;
+mod tree;
 
 use crate::doc::{Doc, Side, SourceSide, Split};
 use crate::files::{self, Entry};
@@ -119,11 +120,21 @@ enum Focus {
     Reader,
 }
 
-/// A file that passes the filter, with the positions of the matched
-/// characters in its path.
-struct Shown {
-    file: usize,
-    hits: Vec<u32>,
+/// A row of the file list: a file that passes the filter, or in the tree,
+/// a folder.
+enum Shown {
+    File {
+        file: usize,
+        /// The positions of the matched characters in what the row shows.
+        hits: Vec<u32>,
+        /// Where in its path the row starts: below the folder being
+        /// listed, or in the tree, at its name.
+        from: usize,
+        depth: usize,
+    },
+    Dir(tree::Dir),
+    /// `..`, inside a folder: up to this one.
+    Up(String),
 }
 
 struct App {
@@ -161,6 +172,15 @@ struct App {
     typing: bool,
     matcher: Matcher,
     shown: Vec<Shown>,
+    /// The files in the list, in order, that pass the filter, whether or
+    /// not their folders are open.
+    listed: Vec<usize>,
+    /// How many files are in the folder being listed.
+    in_scope: usize,
+    /// Folders open in the tree, by path, ending in `/`.
+    open: HashSet<String>,
+    /// The folder being listed, ending in `/`, or `""` for the root.
+    scope: String,
     list: ListState,
     list_height: usize,
     /// Where the list's rows were drawn (empty when it isn't shown).
@@ -238,6 +258,10 @@ impl App {
             typing: false,
             matcher: Matcher::new(Config::DEFAULT.match_paths()),
             shown: Vec::new(),
+            listed: Vec::new(),
+            in_scope: 0,
+            open: HashSet::new(),
+            scope: String::new(),
             list: ListState::default(),
             list_height: 0,
             list_area: Rect::default(),
@@ -379,22 +403,26 @@ impl App {
         }
     }
 
+    /// The selected file (`None` on a folder or `..`).
     fn selected(&self) -> Option<&Entry> {
-        let shown = self.shown.get(self.list.selected()?)?;
-        Some(&self.files[shown.file])
+        match self.shown.get(self.list.selected()?)? {
+            Shown::File { file, .. } => Some(&self.files[*file]),
+            Shown::Dir(_) | Shown::Up(_) => None,
+        }
     }
 
-    /// Re-sorts and re-filters the list, keeping the same file selected.
+    /// Re-sorts and re-filters the list, keeping the same row selected.
     ///
-    /// Until the user moves, the selection stays on the first file (or the
+    /// Until the user moves, the selection stays on the best match (or the
     /// file named on the command line), however the list changes.
     fn refresh(&mut self) {
-        let chosen = self
-            .moved
-            .then(|| self.selected().map(|e| e.path.clone()))
-            .flatten();
-        let keep = self.want.clone().or(chosen);
-        let mut order: Vec<usize> = (0..self.files.len()).collect();
+        let chosen = self.moved.then(|| self.picked()).flatten();
+        let keep = self.want.clone().map(tree::Pick::File).or(chosen);
+        let scope = self.scope().to_string();
+        let mut order: Vec<usize> = (0..self.files.len())
+            .filter(|&i| self.files[i].rel.starts_with(&scope))
+            .collect();
+        self.in_scope = order.len();
         let cmp = if self.by_time {
             files::by_modified
         } else {
@@ -402,39 +430,94 @@ impl App {
         };
         order.sort_by(|&a, &b| cmp(&self.files[a], &self.files[b]));
 
+        // In the list's order, with each match's score.
+        let mut matched: Vec<(usize, Vec<u32>, u32)> = Vec::new();
         if self.filter.is_empty() {
-            self.shown = order
-                .into_iter()
-                .map(|file| Shown {
-                    file,
-                    hits: Vec::new(),
-                })
-                .collect();
+            matched = order.iter().map(|&file| (file, Vec::new(), 0)).collect();
         } else {
             let pattern = Pattern::parse(&self.filter, CaseMatching::Smart, Normalization::Smart);
             let mut buf = Vec::new();
-            let mut scored = Vec::new();
-            for file in order {
+            for &file in &order {
                 let mut hits = Vec::new();
-                let hay = Utf32Str::new(&self.files[file].rel, &mut buf);
+                let hay = Utf32Str::new(&self.files[file].rel[scope.len()..], &mut buf);
                 if let Some(score) = pattern.indices(hay, &mut self.matcher, &mut hits) {
                     hits.sort_unstable();
                     hits.dedup();
-                    scored.push((score, Shown { file, hits }));
+                    matched.push((file, hits, score));
                 }
             }
-            scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
-            self.shown = scored.into_iter().map(|(_, s)| s).collect();
         }
+        self.listed = matched.iter().map(|m| m.0).collect();
 
-        let index = keep.and_then(|p| self.shown.iter().position(|s| self.files[s.file].path == p));
+        // `..`, inside a folder; then the folders, and the files directly
+        // in this one; then the files in the folders, with their paths.
+        // Filtering, the folders that match, then the files, best first.
+        let mut shown = Vec::new();
+        if !scope.is_empty() {
+            shown.push(Shown::Up(self.parent_scope(&scope)));
+        }
+        let mut dir_best = None;
+        if self.filter.is_empty() {
+            shown.extend(tree::rows(
+                &self.files,
+                &self.listed,
+                &scope,
+                false,
+                &self.open,
+                self.by_time,
+            ));
+            matched.retain(|m| self.files[m.0].rel[scope.len()..].contains('/'));
+        } else {
+            let pattern = Pattern::parse(&self.filter, CaseMatching::Smart, Normalization::Smart);
+            let dirs = tree::matching_dirs(
+                &self.files,
+                &order,
+                &scope,
+                self.by_time,
+                &pattern,
+                &mut self.matcher,
+            );
+            dir_best = dirs.first().map(|(score, _)| (*score, shown.len()));
+            shown.extend(dirs.into_iter().map(|(_, d)| Shown::Dir(d)));
+            matched.sort_by_key(|m| std::cmp::Reverse(m.2));
+        }
+        let file_best = matched.first().map(|m| (m.2, shown.len()));
+        shown.extend(matched.into_iter().map(|(file, hits, _)| Shown::File {
+            file,
+            hits,
+            from: scope.len(),
+            depth: 0,
+        }));
+        self.shown = shown;
+
+        let index = keep.and_then(|k| self.row_of(&k));
         if index.is_some() && self.want.take().is_some() {
             // Found the file we were waiting for: from now on it counts as
             // chosen, and later batches mustn't move off it.
             self.moved = true;
         }
-        self.list
-            .select(index.or((!self.shown.is_empty()).then_some(0)));
+        // Filtering, the best match: a folder only if it beats every file.
+        let best = match (dir_best, file_best) {
+            (Some((d, at)), Some((f, _))) if d > f => Some(at),
+            (Some((_, at)), None) => Some(at),
+            (_, Some((_, at))) if !self.filter.is_empty() => Some(at),
+            _ => None,
+        };
+        // Otherwise the first file, as in a list without folders, or the
+        // first row past `..`.
+        let top = self
+            .shown
+            .iter()
+            .position(|s| matches!(s, Shown::File { .. }))
+            .or_else(|| self.shown.iter().position(|s| !matches!(s, Shown::Up(_))))
+            .or((!self.shown.is_empty()).then_some(0));
+        self.list.select(index.or(best).or(top));
+        // Scrolled down a list that's since got shorter, or changed under a
+        // selection the user didn't choose: show its top, scrolling only as
+        // far as the selection needs.
+        let last_top = self.shown.len().saturating_sub(self.list_height);
+        let offset = if self.moved { self.list.offset() } else { 0 };
+        *self.list.offset_mut() = offset.min(last_top);
     }
 
     /// The document for `path`, loading it the first time. (Changes to
@@ -606,7 +689,7 @@ impl App {
             KeyCode::Char('Y') => self.copy_path(),
             KeyCode::Char('O') if self.focus == Focus::Reader => self.focus_outline(false),
             KeyCode::Char('O') => self.outline_pane = !self.outline_pane,
-            KeyCode::Char('t') if !ctrl => self.open_themes(),
+            KeyCode::Char('T') => self.open_themes(),
             KeyCode::Char('s') if !ctrl => {
                 self.prompt = Some(nav::Prompt::Grep {
                     query: String::new(),
@@ -673,6 +756,9 @@ impl App {
             KeyCode::Esc => {
                 self.typing = false;
                 self.filter.clear();
+                // The match stays selected.
+                self.moved = true;
+                return self.refresh();
             }
             KeyCode::Backspace => {
                 if self.filter.pop().is_none() {
@@ -703,17 +789,34 @@ impl App {
             KeyCode::PageUp => self.select_by(-page),
             KeyCode::Char('g') | KeyCode::Home => self.select_by(isize::MIN / 2),
             KeyCode::Char('G') | KeyCode::End => self.select_by(isize::MAX / 2),
+            // → goes down into a folder, ← back up: the same in the tree
+            // and the flat list.
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right if self.on_up() => {
+                self.leave_dir();
+            }
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
+                if self.selected_dir().is_some() =>
+            {
+                self.enter_dir()
+            }
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
                 if let Some(e) = self.selected() {
                     self.reading = Some(e.path.clone());
                     self.focus = Focus::Reader;
                 }
             }
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
+                self.leave_dir();
+            }
+            KeyCode::Char(' ') if self.selected_dir().is_some() => self.toggle_dir(),
             KeyCode::Char('/') => self.typing = true,
             KeyCode::Esc if !self.filter.is_empty() => {
+                // The match stays selected.
+                self.moved = true;
                 self.filter.clear();
                 self.refresh();
             }
+            KeyCode::Esc if self.leave_dir() => {}
             KeyCode::Esc => return true,
             KeyCode::Char('L') => self.open_links(),
             KeyCode::Char('m') => {
@@ -812,12 +915,19 @@ impl App {
         } else if narrow {
             self.draw_list(f, body);
         } else {
-            let widest = self
-                .shown
+            // Every path, as the rows below the folders show them, so the
+            // list keeps its width as you go in and out of folders.
+            let paths = self
+                .files
                 .iter()
-                .map(|s| wrap::width(&self.files[s.file].rel))
-                .max();
-            let want = widest.unwrap_or(0) + 11; // time column, gaps, borders
+                .map(|e| 1 + tree::indent(0) + wrap::width(&e.rel));
+            let rows = self.shown.iter().map(|s| tree::row_width(&self.files, s));
+            let widest = rows.chain(paths).max();
+            // The time column, gaps and borders, and the folders' counts.
+            let want = widest.unwrap_or(0) + 10 + tree::count_column(self.count_width());
+            // Room for the folder being listed in the title: " docs/api/ (12) ".
+            let title = wrap::width(self.scope()) + self.in_scope.to_string().len() + 7;
+            let want = want.max(title);
             let cap = usize::from(body.width) * 2 / 5;
             let list_w = want.clamp(24, cap.max(24)) as u16;
             let [list_area, doc_area] =
@@ -892,10 +1002,14 @@ impl App {
     }
 
     fn draw_list(&mut self, f: &mut Frame, area: Rect) {
+        let name = match self.scope() {
+            "" => "Files",
+            scope => scope,
+        };
         let count = if self.filter.is_empty() {
-            format!(" Files ({}) ", self.files.len())
+            format!(" {name} ({}) ", self.in_scope)
         } else {
-            format!(" Files ({} of {}) ", self.shown.len(), self.files.len())
+            format!(" {name} ({} of {}) ", self.listed.len(), self.in_scope)
         };
         // The filter shows on the list it narrows, not down in the footer.
         let mut title = vec![Span::raw(count)];
@@ -914,17 +1028,33 @@ impl App {
         self.list_area = inner;
         let now = SystemTime::now();
         let width = usize::from(inner.width);
+        let count_w = self.count_width();
+        // Files leave the folders' count column empty.
+        let file_w = width.saturating_sub(tree::count_column(count_w));
         let items: Vec<ListItem> = self
             .shown
             .iter()
-            .map(|s| {
-                let e = &self.files[s.file];
-                ListItem::new(list_line(
-                    &e.rel,
-                    &s.hits,
-                    &files::ago(e.modified, now),
-                    width,
-                ))
+            .map(|s| match s {
+                Shown::File {
+                    file,
+                    hits,
+                    from,
+                    depth,
+                } => {
+                    let e = &self.files[*file];
+                    ListItem::new(list_line(
+                        tree::indent(*depth),
+                        &e.rel[*from..],
+                        hits,
+                        &files::ago(e.modified, now),
+                        file_w,
+                    ))
+                }
+                Shown::Dir(d) => {
+                    let age = files::ago(d.newest, now);
+                    ListItem::new(tree::dir_line(d, &age, width, count_w))
+                }
+                Shown::Up(to) => ListItem::new(tree::up_line(to)),
             })
             .collect();
         let list = List::new(items)
@@ -942,6 +1072,16 @@ impl App {
         }
     }
 
+    /// How wide the folders' counts are: as wide as the most there could
+    /// be, so the columns don't move from folder to folder.
+    fn count_width(&self) -> usize {
+        if self.files.iter().any(|e| e.rel.contains('/')) {
+            self.files.len().to_string().len()
+        } else {
+            0
+        }
+    }
+
     fn draw_preview(&mut self, f: &mut Frame, area: Rect) {
         let path = match self.focus {
             Focus::Reader => self.reading.clone(),
@@ -956,6 +1096,25 @@ impl App {
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         f.render_widget(block, area);
+        if self.focus == Focus::List
+            && let Some(d) = self.selected_dir()
+        {
+            let lines = self.dir_summary(d);
+            f.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
+        if self.focus == Focus::List
+            && let Some(Shown::Up(to)) = self.list.selected().and_then(|i| self.shown.get(i))
+        {
+            let to = if to.is_empty() { "the top" } else { to };
+            let lines = vec![
+                Line::from(format!("Up to {to}")).bold(),
+                Line::default(),
+                Line::from(vec!["⏎ → ←  ".bold(), Span::raw("go up").dim()]),
+            ];
+            f.render_widget(Paragraph::new(lines), inner);
+            return;
+        }
         self.draw_doc(f, inner);
     }
 
@@ -1074,13 +1233,24 @@ impl App {
         }
         let keys: Vec<(&str, &str)> = match self.focus {
             Focus::List => {
-                let mut keys = vec![
-                    ("↑↓", "move"),
-                    ("⏎", "read"),
-                    ("/", "filter"),
-                    ("s", "search text"),
-                    tab,
-                ];
+                let on_dir = self.selected_dir().is_some();
+                let on_file = self.selected().is_some();
+                let mut keys = vec![("↑↓", "move")];
+                if on_dir {
+                    keys.push(("→", "go in"));
+                    if self.filter.is_empty() {
+                        keys.push(("space", "look inside"));
+                    }
+                } else if on_file {
+                    keys.push(("⏎", "read"));
+                }
+                if !self.scope.is_empty() {
+                    keys.push(("←", "up"));
+                }
+                keys.extend([("/", "filter"), ("s", "search text")]);
+                if on_file {
+                    keys.push(tab);
+                }
                 if !self.filter.is_empty() {
                     keys.push(("esc", "clear filter"));
                 }
@@ -1124,45 +1294,124 @@ impl App {
     }
 }
 
+/// A long path shows at least this many characters of its file name beside
+/// its top folder, or else gives up the folder.
+const MIN_NAME: usize = 8;
+
+/// Part of a path as shown: characters `start..end` of it, or a `…` where
+/// some are left out.
+#[derive(Debug, PartialEq)]
+enum Piece {
+    Keep(usize, usize),
+    Gap,
+}
+
+/// What of a path fits in `room` columns: all of it; or its top folder
+/// (which the folder rows above name) and file name, leaving out folders
+/// in between; or the top folder and the start of the file name; or just
+/// the start of the file name.
+fn fit_path(chars: &[char], room: usize) -> Vec<Piece> {
+    use Piece::{Gap, Keep};
+    let w = |from: usize, to: usize| {
+        chars[from..to]
+            .iter()
+            .map(|&c| char_width(c))
+            .sum::<usize>()
+    };
+    let len = chars.len();
+    if w(0, len) <= room {
+        return vec![Keep(0, len)];
+    }
+    // The characters from `from` that fit in `budget` columns: all of them,
+    // or as many as fit beside a `…` after them.
+    let clip = |from: usize, budget: usize| -> Vec<Piece> {
+        if w(from, len) <= budget {
+            return vec![Keep(from, len)];
+        }
+        let (mut end, mut used) = (from, 0);
+        while end < len && used + char_width(chars[end]) < budget {
+            used += char_width(chars[end]);
+            end += 1;
+        }
+        vec![Keep(from, end), Gap]
+    };
+    let name = chars.iter().rposition(|&c| c == '/').map_or(0, |i| i + 1);
+    let top = chars.iter().position(|&c| c == '/').map_or(0, |i| i + 1);
+    if top > 0 {
+        let top_w = w(0, top);
+        // Leave out the folders in between, from the outside in.
+        for b in (top..name).filter(|&i| chars[i] == '/') {
+            if top_w + 1 + w(b, len) <= room {
+                return vec![Keep(0, top), Gap, Keep(b, len)];
+            }
+        }
+        // Then the end of the file name.
+        let mut pieces = vec![Keep(0, top)];
+        let from = if name > top {
+            pieces.push(Gap);
+            name - 1
+        } else {
+            top
+        };
+        let used = w(0, top) + usize::from(name > top);
+        let rest = clip(from, room.saturating_sub(used));
+        if let Some(Keep(start, end)) = rest.first()
+            && end.saturating_sub((*start).max(name)) >= MIN_NAME.min(len - name)
+        {
+            pieces.extend(rest);
+            return pieces;
+        }
+    }
+    let mut pieces = Vec::new();
+    let from = if name > 0 {
+        pieces.push(Gap);
+        name - 1
+    } else {
+        0
+    };
+    pieces.extend(clip(from, room.saturating_sub(usize::from(name > 0))));
+    pieces
+}
+
 /// One row of the file list: the path, with its directory dimmed and filter
-/// matches highlighted, and the age right-aligned. Long paths lose their
-/// start, so the file name stays visible.
-fn list_line(rel: &str, hits: &[u32], age: &str, width: usize) -> Line<'static> {
+/// matches highlighted, and the age right-aligned. Long paths lose the
+/// folders in between, then the end of the file name: see [`fit_path`].
+fn list_line(indent: usize, rel: &str, hits: &[u32], age: &str, width: usize) -> Line<'static> {
     let chars: Vec<char> = rel.chars().collect();
     let dir_len = rel.rfind('/').map_or(0, |i| rel[..=i].chars().count());
     let age_w = wrap::width(age);
-    let room = width.saturating_sub(age_w + 2).max(1);
-
-    // Drop characters from the front until the rest fits, leaving room for "…".
-    let mut skip = 0;
-    let mut path_w: usize = chars.iter().map(|&c| char_width(c)).sum();
-    if path_w > room {
-        while skip < chars.len() && path_w + 1 > room {
-            path_w -= char_width(chars[skip]);
-            skip += 1;
-        }
-        path_w += 1;
-    }
+    let room = width.saturating_sub(indent + age_w + 2).max(1);
 
     let hit = Style::new().yellow().bold();
-    let mut spans: Vec<Span> = vec![Span::raw(" ")];
-    if skip > 0 {
-        spans.push("…".dim());
-    }
-    for (i, &c) in chars.iter().enumerate().skip(skip) {
-        let style = if hits.binary_search(&(i as u32)).is_ok() {
-            hit
-        } else if i < dir_len {
-            Style::new().dim()
-        } else {
-            Style::new()
+    let mut spans: Vec<Span> = vec![Span::raw(" ".repeat(1 + indent))];
+    let mut path_w = 0;
+    for piece in fit_path(&chars, room) {
+        let (start, end) = match piece {
+            Piece::Gap => {
+                spans.push("…".dim());
+                path_w += 1;
+                continue;
+            }
+            Piece::Keep(start, end) => (start, end),
         };
-        match spans.last_mut() {
-            Some(last) if last.style == style => last.content.to_mut().push(c),
-            _ => spans.push(Span::styled(c.to_string(), style)),
+        for (i, &c) in chars.iter().enumerate().take(end).skip(start) {
+            path_w += char_width(c);
+            let style = if hits.binary_search(&(i as u32)).is_ok() {
+                hit
+            } else if i < dir_len {
+                Style::new().dim()
+            } else {
+                Style::new()
+            };
+            match spans.last_mut() {
+                Some(last) if last.style == style && last.content != "…" => {
+                    last.content.to_mut().push(c)
+                }
+                _ => spans.push(Span::styled(c.to_string(), style)),
+            }
         }
     }
-    let gap = width.saturating_sub(1 + path_w + age_w);
+    let gap = width.saturating_sub(1 + indent + path_w + age_w);
     if age_w > 0 && gap > 0 {
         spans.push(Span::raw(" ".repeat(gap)));
         spans.push(Span::raw(age.to_string()).dim());
@@ -1188,7 +1437,7 @@ fn draw_help(f: &mut Frame) {
         ("O", "Keep the outline open beside the text"),
         ("L", "Links: to and from this document"),
         ("s", "Search the text of every file"),
-        ("t", "Pick a color theme"),
+        ("T", "Pick a color theme"),
         ("e", "Edit the file in $EDITOR, at this point"),
         ("y Y", "Copy the code on screen / the file's path"),
         ("/ n N", "Search; next / previous match"),
@@ -1202,6 +1451,8 @@ fn draw_help(f: &mut Frame) {
         ("^v M-v", "Emacs: page down / up"),
         ("M-< M->", "Emacs: top / bottom (^g: esc)"),
         ("/", "Filter files (fuzzy)"),
+        ("→ ←", "In the list: into a folder / up a folder"),
+        ("space", "Look inside a folder, or close it (in the list)"),
         ("m", "Sort by name or by date"),
         ("\\", "Show or hide the list while reading"),
         ("tab", "Show the source beside the rendered text"),
@@ -1376,6 +1627,87 @@ mod tests {
     }
 
     #[test]
+    fn goes_into_folders_and_back_out() {
+        let dir = std::env::temp_dir().join(format!("lsmd-tree-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("docs/api/v2/deep")).unwrap();
+        for f in [
+            "README.md",
+            "docs/a.md",
+            "docs/api/v2/deep/b.md",
+            "docs/api/v2/deep/c.md",
+        ] {
+            std::fs::write(dir.join(f), "# x\n").unwrap();
+        }
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let mut app = scanned(&dir, None);
+        let row = |app: &App| match &app.shown[app.list.selected().unwrap()] {
+            Shown::Dir(d) => d.rel.clone(),
+            Shown::File { file, .. } => app.files[*file].rel.clone(),
+            Shown::Up(to) => format!("..{to}"),
+        };
+        let rows = |app: &App| -> Vec<String> {
+            (0..app.shown.len())
+                .map(|i| match &app.shown[i] {
+                    Shown::Dir(d) => d.label.clone(),
+                    Shown::File { file, from, .. } => app.files[*file].rel[*from..].into(),
+                    Shown::Up(_) => "..".into(),
+                })
+                .collect()
+        };
+        // The folders and the files at the top, then every file in the
+        // folders; starting on the first file.
+        assert_eq!(
+            rows(&app),
+            [
+                "docs/",
+                "README.md",
+                "docs/a.md",
+                "docs/api/v2/deep/b.md",
+                "docs/api/v2/deep/c.md"
+            ]
+        );
+        assert_eq!(row(&app), "README.md");
+        app.list.select(Some(0));
+
+        // Down: `..` first, and paths from the folder.
+        app.enter_dir();
+        assert_eq!(app.listed.len(), 3, "only what's in docs/");
+        assert_eq!(
+            rows(&app),
+            [
+                "..",
+                "api/v2/deep/",
+                "a.md",
+                "api/v2/deep/b.md",
+                "api/v2/deep/c.md"
+            ],
+            "a chain of lone folders is one row"
+        );
+        assert_eq!(row(&app), "docs/a.md");
+        app.select_by(-1);
+        // Looking inside without going in.
+        app.toggle_dir();
+        assert_eq!(app.shown.len(), 7);
+        app.toggle_dir();
+        app.enter_dir();
+        assert!(
+            matches!(&app.shown[0], Shown::Up(to) if to == "docs/"),
+            "up skips the chain"
+        );
+
+        // Up: back to docs/, on the folder just left, then to the top.
+        assert!(app.leave_dir());
+        assert_eq!(app.scope(), "docs/");
+        assert_eq!(row(&app), "docs/api/v2/deep/");
+        app.select_by(-10);
+        assert_eq!(row(&app), "..");
+        assert!(app.leave_dir());
+        assert_eq!(row(&app), "docs/");
+        assert!(!app.leave_dir(), "nowhere further");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn section_trail_drops_outer_sections_to_fit() {
         let s: Vec<String> = ["Guide", "Install", "On Windows"].map(String::from).into();
         assert_eq!(
@@ -1425,14 +1757,47 @@ mod tests {
     #[test]
     fn list_line_right_aligns_age() {
         assert_eq!(
-            text(&list_line("docs/a.md", &[], "2h ago", 20)),
+            text(&list_line(0, "docs/a.md", &[], "2h ago", 20)),
             " docs/a.md    2h ago"
         );
     }
 
     #[test]
-    fn list_line_trims_long_paths_from_the_front() {
-        let line = list_line("very/long/directory/name.md", &[], "1d ago", 20);
-        assert_eq!(text(&line), " …ory/name.md 1d ago");
+    fn long_paths_keep_the_top_folder_and_the_start_of_the_name() {
+        let fit = |path: &str, room| {
+            let chars: Vec<char> = path.chars().collect();
+            fit_path(&chars, room)
+                .into_iter()
+                .map(|p| match p {
+                    Piece::Keep(a, b) => chars[a..b].iter().collect(),
+                    Piece::Gap => "…".to_string(),
+                })
+                .collect::<String>()
+        };
+        let deep = "src/App.Desktop/Platform/MacOS/rnnoise/VENDOR.md";
+        assert_eq!(fit(deep, 60), deep);
+        assert_eq!(fit(deep, 30), "src/…/MacOS/rnnoise/VENDOR.md");
+        assert_eq!(fit(deep, 16), "src/…/VENDOR.md");
+        // Too little room for the folder and enough of the name.
+        assert_eq!(fit(deep, 14), "…/VENDOR.md");
+        assert_eq!(fit(deep, 10), "…/VENDOR.…");
+        let long = "docs/RELEASE_CHECKLIST_2026-09-27_FOLLOWUPS.md";
+        assert_eq!(fit(long, 30), "docs/RELEASE_CHECKLIST_2026-0…");
+        assert_eq!(fit("README_WITH_A_VERY_LONG_NAME.md", 12), "README_WITH…");
+    }
+
+    #[test]
+    fn list_line_highlights_hits_around_a_gap() {
+        // "docs/…/b.md", with the hit on the "b".
+        let line = list_line(0, "docs/aaaaaaaaaaaaaaaa/b.md", &[22], "", 14);
+        assert_eq!(text(&line), " docs/…/b.md");
+        let hit = line.spans.iter().find(|s| s.style.fg.is_some()).unwrap();
+        assert_eq!(hit.content, "b");
+    }
+
+    #[test]
+    fn list_line_gives_up_the_folder_for_the_name() {
+        let line = list_line(0, "very/long/directory/name.md", &[], "1d ago", 20);
+        assert_eq!(text(&line), " …/name.md    1d ago");
     }
 }

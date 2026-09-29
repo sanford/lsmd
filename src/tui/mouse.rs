@@ -69,8 +69,8 @@ impl App {
         }
     }
 
-    /// A click on row `y` of the file list selects that file, or opens it
-    /// if it was already selected.
+    /// A click on row `y` of the file list selects that row, or if it was
+    /// already selected, opens the file or opens or closes the folder.
     fn click_list(&mut self, y: u16) {
         let row = usize::from(y.saturating_sub(self.list_area.y));
         let i = self.list.offset() + row;
@@ -78,7 +78,11 @@ impl App {
             return;
         }
         if self.list.selected() == Some(i) {
-            if let Some(e) = self.selected() {
+            if self.on_up() {
+                self.leave_dir();
+            } else if self.selected_dir().is_some() {
+                self.toggle_dir();
+            } else if let Some(e) = self.selected() {
                 self.reading = Some(e.path.clone());
                 self.focus = Focus::Reader;
                 self.history.clear();

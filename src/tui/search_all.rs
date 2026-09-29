@@ -15,11 +15,12 @@ impl App {
         if query.is_empty() {
             return;
         }
-        // The files in the list, in its order (and filter).
+        // The files in the list, in its order (and filter), in folders
+        // open or not.
         let files: Vec<_> = self
-            .shown
+            .listed
             .iter()
-            .map(|s| &self.files[s.file])
+            .map(|&i| &self.files[i])
             .map(|e| (e.path.clone(), e.rel.clone()))
             .collect();
         if files.is_empty() {
