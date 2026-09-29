@@ -177,6 +177,9 @@ struct App {
     listed: Vec<usize>,
     /// How many files are in the folder being listed.
     in_scope: usize,
+    /// How wide the folders' counts are (see [`App::count_width`]), kept
+    /// up to date by [`App::refresh`] rather than worked out every row.
+    count_w: usize,
     /// Folders open in the tree, by path, ending in `/`.
     open: HashSet<String>,
     /// The folder being listed, ending in `/`, or `""` for the root.
@@ -260,6 +263,7 @@ impl App {
             shown: Vec::new(),
             listed: Vec::new(),
             in_scope: 0,
+            count_w: 0,
             open: HashSet::new(),
             scope: String::new(),
             list: ListState::default(),
@@ -401,6 +405,11 @@ impl App {
         if changed {
             self.refresh();
         }
+        if self.scan.is_none() {
+            // The scan's done: a file asked for that it didn't list (hidden,
+            // say) mustn't keep the selection from following the user.
+            self.want = None;
+        }
     }
 
     /// The selected file (`None` on a folder or `..`).
@@ -421,6 +430,11 @@ impl App {
         let scope = self.scope().to_string();
         let order = self.sorted_in(&scope);
         self.in_scope = order.len();
+        self.count_w = if self.files.iter().any(|e| e.rel.contains('/')) {
+            self.files.len().to_string().len()
+        } else {
+            0
+        };
 
         // In the list's order, with each match's score.
         let mut matched: Vec<(usize, Vec<u32>, u32)> = Vec::new();
@@ -497,9 +511,12 @@ impl App {
         // Otherwise the README here, where there is one, or the first row
         // past `..`.
         let readme = self.shown.iter().position(|s| match s {
-            Shown::File { file, from, .. } => {
+            Shown::File {
+                file, from, depth, ..
+            } => {
+                // Not one in a folder opened in place.
                 let shown = &self.files[*file].rel[*from..];
-                !shown.contains('/') && shown.to_lowercase().starts_with("readme.")
+                *depth == 0 && !shown.contains('/') && shown.to_lowercase().starts_with("readme.")
             }
             _ => false,
         });
@@ -641,6 +658,10 @@ impl App {
     }
 
     fn start_edit(&mut self) {
+        if self.selected_folder().is_some() {
+            self.flash = Some("Choose a file to edit".into());
+            return;
+        }
         let Some(path) = self.current_path() else {
             self.flash = Some("Standard input isn't a file to edit".into());
             return;
@@ -670,7 +691,15 @@ impl App {
     }
 
     fn copy_path(&mut self) {
-        let Some(path) = self.current_path() else {
+        let folder = self.selected_folder().zip(self.root.as_ref());
+        let Some(path) = folder
+            .map(|(dir, root)| {
+                dir.split('/')
+                    .filter(|c| !c.is_empty())
+                    .fold(root.clone(), |p, c| p.join(c))
+            })
+            .or_else(|| self.current_path())
+        else {
             self.flash = Some("Standard input has no path".into());
             return;
         };
@@ -1060,11 +1089,7 @@ impl App {
     /// How wide the folders' counts are: as wide as the most there could
     /// be, so the columns don't move from folder to folder.
     fn count_width(&self) -> usize {
-        if self.files.iter().any(|e| e.rel.contains('/')) {
-            self.files.len().to_string().len()
-        } else {
-            0
-        }
+        self.count_w
     }
 
     /// A row of the file list, `width` columns wide.
@@ -1742,6 +1767,39 @@ mod tests {
         assert!(app.leave_dir());
         assert_eq!(row(&app), "docs/");
         assert!(!app.leave_dir(), "nowhere further");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn folder_rows_keep_the_selection_and_the_top_readme() {
+        let dir = std::env::temp_dir().join(format!("lsmd-keep-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::create_dir_all(dir.join(".hidden")).unwrap();
+        for f in ["README.md", "docs/README.md", "docs/a.md", ".hidden/x.md"] {
+            std::fs::write(dir.join(f), "# x\n").unwrap();
+        }
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        // Asked for a file the scan doesn't list: once it's done, the
+        // selection follows the user again.
+        let mut app = scanned(&dir, Some(dir.join(".hidden/x.md")));
+        assert!(app.want.is_none());
+        assert_eq!(app.count_w, 1, "folders: room for their counts");
+        app.focus = Focus::List;
+        app.list.select(Some(0));
+        app.moved = true;
+        app.toggle_dir();
+        assert_eq!(app.selected_dir().unwrap().rel, "docs/", "Space keeps it");
+
+        // With docs/ open in place, the README to start on is the top one.
+        app.moved = false;
+        app.refresh();
+        assert_eq!(app.selected().unwrap().rel, "README.md");
+
+        // e on a folder asks for a file, rather than blaming stdin.
+        app.list.select(Some(0));
+        app.start_edit();
+        assert_eq!(app.flash.as_deref(), Some("Choose a file to edit"));
+        assert!(app.edit.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
