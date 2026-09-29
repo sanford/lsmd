@@ -34,7 +34,7 @@ Documentation piles up. A project that's been worked on for a while, especially 
 
 ![A design document with two Mermaid diagrams drawn in place: a flowchart of the capture pipeline, and a sequence diagram of saving, scrolling with the text](docs/images/diagrams.png)
 
-It reads well, too. Text uses the full width of the terminal, and tables, code (long lines wrap, marked `↪`, so there's no scrolling sideways), task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `Tab` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading, and `#` numbers the text with the lines it comes from.
+It reads well, too. Text uses the full width of the terminal, and tables, code (long lines wrap, marked `↪`, so there's no scrolling sideways), task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `S` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading, and `#` numbers the text with the lines it comes from.
 
 `lsmd` runs on macOS, Linux and Windows. When its output isn't a terminal, `lsmd FILE` prints the rendered document and `lsmd` lists the files, for scripts.
 
@@ -128,9 +128,10 @@ Anywhere:
 
 | Key | |
 |---|---|
-| `Tab` | Show or hide the source beside the rendered text |
+| `Tab` | Between the file list and the document. From the list, reads the selected file, with the list kept beside it on a terminal 130 columns or wider; from the document, back to the list, which keeps showing what you were reading until you select another file, so `Tab` again returns to it |
+| `S` | Show or hide the source beside the rendered text |
 | `#` | Show or hide line numbers: the source line each paragraph, list item, table row and line of code starts on |
-| `Ctrl-W` `Shift-Tab` | Scroll the source side or the rendered side |
+| `Ctrl-W` | Scroll the source side or the rendered side |
 | `<` `>` | Move the divider |
 | `e` | Edit the file in `$VISUAL` or `$EDITOR`, at the line you're reading |
 | `y` `Y` | Copy the code block on screen, or the file's path |

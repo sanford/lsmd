@@ -34,6 +34,9 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
+/// A terminal this wide keeps the file list beside a document `Tab` opens.
+const WIDE: u16 = 130;
+
 /// How long pictures wait after moving before they're drawn in full.
 const FIGURE_SETTLE: Duration = Duration::from_millis(150);
 /// The most pictures kept ready to draw.
@@ -228,6 +231,12 @@ struct App {
     reading: Option<PathBuf>,
     /// Keep the file list on screen while reading.
     list_in_reader: bool,
+    /// The file selected when `Tab` left the reader for the list: until
+    /// another is selected, the list shows what was being read, and `Tab`
+    /// goes back to it.
+    left_on: Option<PathBuf>,
+    /// How wide the screen was drawn, below the header.
+    body_width: u16,
     /// Show the outline pane beside the document while reading.
     outline_pane: bool,
     /// Where the outline pane's rows were drawn (empty when it isn't shown).
@@ -320,6 +329,8 @@ impl App {
             focus: Focus::List,
             reading: None,
             list_in_reader: false,
+            left_on: None,
+            body_width: 0,
             outline_pane: false,
             outline_area: Rect::default(),
             outline_list: ListState::default(),
@@ -715,11 +726,7 @@ impl App {
 
     /// The document on screen: the one being read, or else the selected one.
     fn current(&mut self) -> Option<&mut Doc> {
-        let path = match self.focus {
-            Focus::Reader => self.reading.clone(),
-            Focus::List => self.selected().map(|e| e.path.clone()),
-        };
-        match path {
+        match self.current_path() {
             Some(path) => Some(self.doc(&path)),
             None => self.text.as_mut().map(|(_, doc)| doc),
         }
@@ -845,6 +852,41 @@ impl App {
         }
     }
 
+    /// `Tab`: from the list, reads the selected file, with the list kept
+    /// beside it if there's room; from the reader, back to the list, which
+    /// shows what was being read until another file's selected.
+    fn switch_view(&mut self) {
+        if self.text.is_some() {
+            return;
+        }
+        match self.focus {
+            // Back to what was being read, links followed and all.
+            Focus::List if self.kept() => self.focus = Focus::Reader,
+            Focus::List => {
+                let Some(path) = self.selected().map(|e| e.path.clone()) else {
+                    self.flash = Some("Choose a file to read".into());
+                    return;
+                };
+                self.reading = Some(path);
+                self.focus = Focus::Reader;
+                self.history.clear();
+                self.list_in_reader = self.body_width >= WIDE;
+            }
+            Focus::Reader => {
+                self.focus = Focus::List;
+                self.left_on = self.selected().map(|e| e.path.clone());
+            }
+        }
+    }
+
+    /// In the list, still showing what `Tab` left the reader on: nothing
+    /// else has been selected since.
+    pub(super) fn kept(&self) -> bool {
+        self.focus == Focus::List
+            && self.left_on.is_some()
+            && self.left_on.as_ref() == self.selected().map(|e| &e.path)
+    }
+
     /// Keys that work the same in the list and the reader.
     fn view_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
         match key.code {
@@ -859,9 +901,9 @@ impl App {
                     query: String::new(),
                 });
             }
-            KeyCode::Tab => self.split = !self.split,
+            KeyCode::Char('S') => self.split = !self.split,
+            KeyCode::Tab | KeyCode::BackTab => self.switch_view(),
             KeyCode::Char('#') => self.numbers = !self.numbers,
-            KeyCode::BackTab if self.split => self.source_focus = !self.source_focus,
             KeyCode::Char('w') if ctrl && self.split => self.source_focus = !self.source_focus,
             // Move the divider, whichever side the source is on.
             KeyCode::Char(c @ ('<' | '>')) if self.split => {
@@ -1075,6 +1117,7 @@ impl App {
         let reader_only =
             self.text.is_some() || (self.focus == Focus::Reader && !self.list_in_reader);
         let narrow = body.width < 80;
+        self.body_width = body.width;
         if reader_only || (narrow && self.focus == Focus::Reader) {
             // One column of margin on each side.
             let area = Rect {
@@ -1164,12 +1207,10 @@ impl App {
     }
 
     fn pane(&self, title: impl Into<Line<'static>>, focused: bool) -> Block<'static> {
-        let block = Block::bordered().title(title);
-        if focused {
-            block
-        } else {
-            block.border_style(Style::new().dim())
-        }
+        // In the theme's accent, if it has one; dim without the keyboard.
+        let border = self.theme.frame.map_or(Style::new(), |c| Style::new().fg(c));
+        let border = if focused { border } else { border.dim() };
+        Block::bordered().title(title).border_style(border)
     }
 
     fn draw_list(&mut self, f: &mut Frame, area: Rect) {
@@ -1312,10 +1353,7 @@ impl App {
 
     fn draw_preview(&mut self, f: &mut Frame, area: Rect) {
         let folder = self.selected_folder();
-        let path = match self.focus {
-            Focus::Reader => self.reading.clone(),
-            Focus::List => self.selected().map(|e| e.path.clone()),
-        };
+        let path = self.current_path();
         let title = match (&folder, path.as_deref()) {
             (Some(dir), _) if dir.is_empty() => format!(" {} ", self.root_label),
             (Some(dir), _) => format!(" {dir} "),
@@ -1488,13 +1526,13 @@ impl App {
         } else {
             self.back_label()
         };
-        let tab = ("tab", if self.split { "hide source" } else { "source" });
+        let source = ("S", if self.split { "hide source" } else { "source" });
         let mut reader = vec![
             ("↑↓", "scroll"),
             ("/", "search"),
             ("f", "follow"),
             ("o", "outline"),
-            tab,
+            source,
         ];
         if self.split {
             reader.push((
@@ -1523,8 +1561,11 @@ impl App {
                     keys.push(("←", "up"));
                 }
                 keys.extend([("/", "filter"), ("s", "search text")]);
+                if self.kept() {
+                    keys.push(("tab", "back to reading"));
+                }
                 if on_file {
-                    keys.push(tab);
+                    keys.push(source);
                 }
                 if !self.filter.is_empty() {
                     keys.push(("esc", "clear filter"));
@@ -1743,9 +1784,10 @@ fn draw_help(f: &mut Frame) {
         ("m", "Sort by name or by date"),
         (".", "Show or hide hidden files"),
         ("\\", "Show or hide the list while reading"),
-        ("tab", "Show the source beside the rendered text"),
+        ("tab", "Between the list and the document"),
+        ("S", "Show the source beside the rendered text"),
         ("#", "Show or hide line numbers"),
-        ("^w ⇧tab", "Switch between source and rendered"),
+        ("^w", "Switch between source and rendered"),
         ("< >", "Move the divider left / right"),
         ("Q", "Quit from anywhere"),
     ];
@@ -2141,6 +2183,49 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(app.selected().unwrap().rel, "docs/a.md");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tab_goes_between_the_list_and_the_document() {
+        let dir = std::env::temp_dir().join(format!("lsmd-tab-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.md"), "# A\n\n[to b](b.md)\n").unwrap();
+        std::fs::write(dir.join("b.md"), "# B\n").unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let tab = KeyEvent::from(KeyCode::Tab);
+        for (width, beside) in [(160, true), (100, false)] {
+            let mut app = scanned(&dir, None);
+            app.body_width = width;
+            app.list.select(app.row_of(&tree::Pick::File(dir.join("a.md"))));
+            app.key(tab);
+            assert!(app.focus == Focus::Reader);
+            assert_eq!(app.reading, Some(dir.join("a.md")));
+            assert_eq!(app.list_in_reader, beside, "{width}");
+
+            // Follow a link, then Tab to the list: it still shows b.md.
+            app.follow("b.md");
+            assert_eq!(app.reading, Some(dir.join("b.md")));
+            app.key(tab);
+            assert!(app.focus == Focus::List && app.kept());
+            assert_eq!(app.current_path(), Some(dir.join("b.md")));
+            // And Tab goes back to it, with the way back to a.md.
+            app.key(tab);
+            assert!(app.focus == Focus::Reader);
+            assert_eq!(app.reading, Some(dir.join("b.md")));
+            assert!(!app.history.is_empty());
+
+            // Choosing another file in the list ends that.
+            app.key(tab);
+            app.select_by(1);
+            assert!(!app.kept());
+            let selected = app.selected().map(|e| e.path.clone());
+            assert_eq!(app.current_path(), selected);
+        }
+        // S shows the source; Tab doesn't.
+        let mut app = scanned(&dir, None);
+        app.key(KeyEvent::from(KeyCode::Char('S')));
+        assert!(app.split);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -23,6 +23,7 @@ impl App {
     pub(super) fn current_path(&self) -> Option<PathBuf> {
         match self.focus {
             Focus::Reader => self.reading.clone(),
+            Focus::List if self.kept() => self.reading.clone(),
             Focus::List => self.selected().map(|e| e.path.clone()),
         }
     }

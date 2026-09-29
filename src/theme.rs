@@ -85,6 +85,8 @@ pub struct Theme {
     pub color: bool,
     truecolor: bool,
     pub code_bg: Option<Color>,
+    /// The border of the pane with the keyboard: a bundled theme's accent.
+    pub frame: Option<Color>,
     /// Code colors made from an Omarchy palette, instead of the built-in
     /// syntax theme.
     pub syntax: Option<SyntaxTheme>,
@@ -109,6 +111,7 @@ impl Theme {
             color,
             truecolor,
             code_bg: None,
+            frame: None,
             syntax: None,
             paint: None,
         };
@@ -134,6 +137,7 @@ impl Theme {
             color: false,
             truecolor: false,
             code_bg: None,
+            frame: None,
             syntax: None,
             paint: None,
         }
@@ -151,6 +155,8 @@ impl Theme {
     pub fn painted(palette: &Palette, color: bool) -> Theme {
         let mut theme = Theme::new(Mode::Auto, color, Some(palette));
         if color {
+            let accent = palette.accent();
+            theme.frame = Some(theme.rgb(accent.r, accent.g, accent.b));
             let rgb = |c: omarchy_theme::Rgb| theme.rgb(c.r, c.g, c.b);
             theme.paint = Some(Paint {
                 ansi: std::array::from_fn(|i| rgb(palette.ansi(i as u8))),
