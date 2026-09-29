@@ -137,11 +137,29 @@ fn start() -> Sender<(u64, Job)> {
 /// Reads and decodes an image file: the picture, and its size in pixels.
 /// SVGs are drawn as diagrams are; GIFs show their first frame.
 fn load(path: &Path) -> Result<(DynamicImage, u32, u32), String> {
+    use std::io::Read;
+    // Only files: a document may point anywhere, and a device like
+    // /dev/zero never ends, while a named pipe blocks as it's opened.
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a file".into());
+    }
     if meta.len() > crate::files::BACKGROUND_LIMIT {
         return Err("too big".into());
     }
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    // It may have been swapped since: check what was opened, and read no
+    // more than the limit whatever it says.
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Err("not a file".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(crate::files::BACKGROUND_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > crate::files::BACKGROUND_LIMIT {
+        return Err("too big".into());
+    }
     let svg = path
         .extension()
         .and_then(|e| e.to_str())
@@ -196,6 +214,19 @@ mod tests {
         std::fs::write(&text, "not a picture").unwrap();
         assert!(load(&text).is_err());
         assert!(load(&dir.join("missing.png")).is_err());
+
+        // Not files: refused without reading, rather than read forever or
+        // waited on.
+        assert!(load(&dir).is_err(), "a folder");
+        #[cfg(unix)]
+        {
+            assert_eq!(load(Path::new("/dev/zero")).unwrap_err(), "not a file");
+            let fifo = dir.join("pipe.png");
+            let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+            if made.is_ok_and(|s| s.success()) {
+                assert_eq!(load(&fifo).unwrap_err(), "not a file");
+            }
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
