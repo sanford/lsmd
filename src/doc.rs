@@ -714,6 +714,12 @@ impl Doc {
         self.top
     }
 
+    /// Scrolls the rendered text back to line `top`, as [`Doc::top`] gave it.
+    pub fn set_top(&mut self, top: usize) {
+        self.top = top;
+        self.lead = Side::Rendered;
+    }
+
     /// Searches the rendered text for `query` and jumps to the first match
     /// at or after line `from`. Smart case: case matters only if the query
     /// has capitals. Returns false if nothing matches.
@@ -768,6 +774,7 @@ impl Doc {
 
     pub fn clear_search(&mut self) {
         self.search = None;
+        self.pending_match = None;
     }
 
     /// "3/17" for the current match, or "0/0".

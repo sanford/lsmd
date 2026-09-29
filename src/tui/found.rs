@@ -32,6 +32,9 @@ pub struct TextSearch {
     /// The file whose preview was last moved to its first match, and the
     /// filter it was moved for.
     pub(super) previewed: Option<(PathBuf, String)>,
+    /// The files previews have moved to a match, and where each was
+    /// before, to put back once the filter changes.
+    moved: HashMap<PathBuf, usize>,
 }
 
 impl TextSearch {
@@ -54,6 +57,17 @@ impl App {
         let text = &mut self.text_search;
         text.stop();
         text.found = None;
+        text.previewed = None;
+        // Previews leave the files as they were, unless one was opened.
+        for (path, top) in text.moved.drain() {
+            if self.reading.as_ref() == Some(&path) {
+                continue;
+            }
+            if let Some(doc) = self.docs.get_mut(&path) {
+                doc.clear_search();
+                doc.set_top(top);
+            }
+        }
         text.due = (self.filter.chars().count() >= MIN_CHARS).then(|| Instant::now() + PAUSE);
     }
 
@@ -132,6 +146,9 @@ impl App {
         }
         self.text_search.previewed = want;
         let query = self.filter.clone();
-        self.doc(&path).go_to_match(1, &query);
+        let doc = self.doc(&path);
+        let top = doc.top();
+        doc.go_to_match(1, &query);
+        self.text_search.moved.entry(path).or_insert(top);
     }
 }

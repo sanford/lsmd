@@ -2012,6 +2012,26 @@ mod tests {
             Some((dir.join("docs/b.md"), "install".into()))
         );
 
+        // Drawn, the preview is on the match.
+        let b = dir.join("docs/b.md");
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(app.doc(&b).search_status().as_deref(), Some("1/2"));
+
+        // Clearing the filter leaves the previewed file as it was.
+        app.key(KeyEvent::from(KeyCode::Esc));
+        term.draw(|f| app.draw(f)).unwrap();
+        assert!(app.doc(&b).search_status().is_none());
+        assert_eq!(app.doc(&b).top(), 0);
+        app.key(KeyEvent::from(KeyCode::Char('/')));
+        for c in "install".chars() {
+            app.key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        while app.text_search.busy() {
+            app.receive();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
         // Typing more searches again; nothing found by name, the first
         // found by its text is selected.
         app.key(KeyEvent::from(KeyCode::Char(',')));
