@@ -1343,7 +1343,8 @@ impl App {
                 None => d.position(),
             })
             .unwrap_or_default();
-        let pos_width = wrap::width(&position) as u16 + 1;
+        // And a gap before it, for when the keys don't all fit.
+        let pos_width = wrap::width(&position) as u16 + 3;
         let [keys_area, pos_area] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(pos_width)]).areas(area);
         f.render_widget(Paragraph::new(Line::from(spans)), keys_area);
