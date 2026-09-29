@@ -169,6 +169,11 @@ impl App {
                 self.outline_filter = Some(String::new());
                 false
             }
+            // What to copy, of the section under the cursor.
+            KeyCode::Char('c') if !ctrl => {
+                self.open_copy(Some(sel));
+                false
+            }
             // Never mind: back to where the document was.
             KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
                 if let Some(doc) = self.current() {

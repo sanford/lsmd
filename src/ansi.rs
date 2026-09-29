@@ -23,7 +23,7 @@ pub fn print(lines: &[RLine], out: &mut impl Write) -> io::Result<()> {
 }
 
 /// The SGR parameters for `style`, e.g. "1;35".
-fn sgr(style: Style) -> String {
+pub(crate) fn sgr(style: Style) -> String {
     let mut codes: Vec<String> = Vec::new();
     let m = style.add_modifier;
     for (flag, code) in [

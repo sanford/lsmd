@@ -13,7 +13,7 @@ use crate::theme::Theme;
 use crate::wrap;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::path::{Path, PathBuf};
@@ -73,13 +73,29 @@ struct Search {
     current: Option<usize>,
 }
 
-/// A label typed to follow the link it's drawn on.
+/// A label typed to follow the link it's drawn on, or to copy the code
+/// block it's on.
 pub struct Hint {
     pub label: String,
     line: usize,
     col: usize,
-    /// The link's target.
+    /// The link's target, or the code block's index.
     pub url: String,
+}
+
+/// Something that can be selected to copy: a paragraph, heading, list
+/// item, table row or line of code. Its rendered lines, and its source's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub rendered: (usize, usize),
+    pub source: (usize, usize),
+    /// The top-level block it's part of, by its source lines, and whether
+    /// it starts or ends it.
+    block: (usize, usize),
+    first: bool,
+    last: bool,
+    /// A line of a code block.
+    code: bool,
 }
 
 pub struct Doc {
@@ -92,9 +108,14 @@ pub struct Doc {
     links: Vec<String>,
     code_blocks: Vec<CodeBlock>,
     figures: Vec<Figure>,
+    /// Lines of big headings (see `sizing`).
+    big: Vec<usize>,
     search: Option<Search>,
     /// Link hints on screen, while choosing a link to follow.
     pub hints: Vec<Hint>,
+    /// Rendered lines shown selected, first and last, while choosing what
+    /// to copy.
+    pub selection: Option<(usize, usize)>,
     /// A heading to jump to once the document is laid out.
     pending_anchor: Option<String>,
     /// A search match to jump to once the document is laid out: its source
@@ -140,8 +161,10 @@ impl Doc {
             links: Vec::new(),
             code_blocks: Vec::new(),
             figures: Vec::new(),
+            big: Vec::new(),
             search: None,
             hints: Vec::new(),
+            selection: None,
             pending_anchor: None,
             pending_match: None,
             keep: None,
@@ -231,6 +254,7 @@ impl Doc {
         self.links = rendered.links;
         self.code_blocks = rendered.code_blocks;
         self.figures = rendered.figures;
+        self.big = rendered.big;
         self.width = width;
         if let Some(query) = self.search.as_ref().map(|s| s.query.clone()) {
             self.find(&query);
@@ -459,6 +483,29 @@ impl Doc {
             .collect();
         f.render_widget(Paragraph::new(visible), area);
         self.draw_scrollbar(f, area);
+        if let Some((first, last)) = self.selection {
+            let rows = first.max(self.top)..=last.min(self.top + self.height.saturating_sub(1));
+            for line in rows {
+                let row = Rect {
+                    y: area.y + (line - self.top) as u16,
+                    height: 1,
+                    ..area
+                };
+                f.buffer_mut()
+                    .set_style(row, Style::new().add_modifier(Modifier::REVERSED));
+            }
+        }
+        // Before the link hints, which a big heading would hide.
+        for &line in &self.big {
+            let Some(row) = line.checked_sub(self.top) else {
+                continue;
+            };
+            if row + 1 < self.height && line + 1 < self.lines.len() {
+                let cols = wrap::spans_width(&self.lines[line].spans);
+                let y = area.y + row as u16;
+                crate::sizing::place(f.buffer_mut(), area.x, y, cols as u16);
+            }
+        }
 
         let style = Style::new().black().on_yellow().bold();
         for hint in &self.hints {
@@ -641,11 +688,177 @@ impl Doc {
     }
 
     /// The first code block on screen.
-    pub fn code_on_screen(&self) -> Option<&CodeBlock> {
+    /// The code blocks on screen, by index, with the first of their lines
+    /// that's on screen.
+    pub fn code_on_screen(&self) -> Vec<(usize, usize)> {
         let screen = self.top..self.top + self.height;
         self.code_blocks
             .iter()
-            .find(|b| b.lines.start < screen.end && screen.start < b.lines.end)
+            .enumerate()
+            .filter(|(_, b)| b.lines.start < screen.end && screen.start < b.lines.end)
+            .map(|(i, b)| (i, b.lines.start.max(self.top)))
+            .collect()
+    }
+
+    pub fn code_block(&self, i: usize) -> Option<&CodeBlock> {
+        self.code_blocks.get(i)
+    }
+
+    /// The Markdown, as written.
+    pub fn markdown(&self) -> &str {
+        &self.md
+    }
+
+    /// Source lines `first` to `last` (1-based), without blank lines at
+    /// the end.
+    fn source_lines(&self, first: usize, last: usize) -> String {
+        let lines: Vec<&str> = self
+            .md
+            .lines()
+            .skip(first.saturating_sub(1))
+            .take(last.saturating_add(1).saturating_sub(first.max(1)))
+            .collect();
+        let end = lines
+            .iter()
+            .rposition(|l| !l.trim().is_empty())
+            .map_or(0, |i| i + 1);
+        lines[..end].iter().map(|l| format!("{l}\n")).collect()
+    }
+
+    /// The source of heading `i`'s section: to the next heading as high
+    /// or higher, so with the sections under it.
+    pub fn section_source(&self, i: usize) -> Option<String> {
+        let h = self.headings.get(i)?;
+        let src = |h: &Heading| self.lines.get(h.line).and_then(|l| l.src).map(|s| s.0);
+        let first = src(h)?;
+        let last = self.headings[i + 1..]
+            .iter()
+            .find(|next| next.level <= h.level)
+            .and_then(src)
+            .map_or(usize::MAX, |next| next - 1);
+        Some(self.source_lines(first, last))
+    }
+
+    /// Everything that can be selected, in order.
+    pub fn pieces(&self) -> Vec<Piece> {
+        let starts: Vec<usize> = (0..self.lines.len())
+            .filter(|&i| self.lines[i].line.is_some() && self.lines[i].src.is_some())
+            .collect();
+        let mut out: Vec<Piece> = Vec::new();
+        for (k, &r0) in starts.iter().enumerate() {
+            let line = &self.lines[r0];
+            let (block, start) = (line.src.unwrap_or_default(), line.line.unwrap_or(1));
+            let next = starts.get(k + 1).copied();
+            let next_in_block = next.filter(|&n| self.lines[n].src == Some(block));
+            let end = next.unwrap_or(self.lines.len());
+            let r1 = (r0..end)
+                .take_while(|&i| self.lines[i].src == Some(block))
+                .last()
+                .unwrap_or(r0);
+            let s1 = match next_in_block {
+                Some(n) => self.lines[n]
+                    .line
+                    .unwrap_or(start)
+                    .saturating_sub(1)
+                    .max(start),
+                None => block.1,
+            };
+            out.push(Piece {
+                rendered: (r0, r1),
+                source: (start, s1),
+                block,
+                first: out.last().is_none_or(|p| p.block != block),
+                last: next_in_block.is_none(),
+                code: self.code_blocks.iter().any(|b| b.lines.contains(&r0)),
+            });
+        }
+        out
+    }
+
+    /// The piece at or after the top of the screen, as an index into
+    /// [`Doc::pieces`].
+    pub fn piece_on_screen(&self) -> usize {
+        let pieces = self.pieces();
+        pieces
+            .iter()
+            .position(|p| p.rendered.1 >= self.top)
+            .unwrap_or(pieces.len().saturating_sub(1))
+    }
+
+    /// The piece on the rendered line at screen row `y`, if there's text.
+    pub fn piece_at(&self, y: u16) -> Option<usize> {
+        let area = self.rendered_area;
+        if y < area.y || y >= area.bottom() {
+            return None;
+        }
+        let line = self.top + usize::from(y - area.y);
+        let pieces = self.pieces();
+        pieces
+            .iter()
+            .position(|p| p.rendered.1 >= line)
+            .or(pieces.len().checked_sub(1))
+    }
+
+    /// The code block piece `i` is a line of, by its source lines.
+    pub fn code_block_of(&self, i: usize) -> Option<(usize, usize)> {
+        self.pieces().get(i).filter(|p| p.code).map(|p| p.block)
+    }
+
+    /// Pieces `a` to `b` in order, taking in the whole of a code block
+    /// they go into from outside: half of one, fences and all, would
+    /// swallow what it's pasted into.
+    fn span(pieces: &[Piece], a: usize, b: usize) -> Option<(usize, usize)> {
+        let (mut a, mut b) = (a.min(b), a.max(b));
+        let (pa, pb) = (pieces.get(a)?, pieces.get(b)?);
+        if pa.block != pb.block {
+            if pa.code {
+                a = pieces.iter().position(|p| p.block == pa.block)?;
+            }
+            if pb.code {
+                b = pieces.iter().rposition(|p| p.block == pb.block)?;
+            }
+        }
+        Some((a, b))
+    }
+
+    /// The source of pieces `a` to `b`, either way round, and how many
+    /// lines it is. What they cover wholly comes with what goes around it:
+    /// a code block's fences, a list's markers. Lines within one code
+    /// block are just the code.
+    pub fn pieces_source(&self, a: usize, b: usize) -> (String, usize) {
+        let pieces = self.pieces();
+        let Some((a, b)) = Self::span(&pieces, a, b) else {
+            return (String::new(), 0);
+        };
+        let (pa, pb) = (&pieces[a], &pieces[b]);
+        let (first, last) = if pa.code && pa.block == pb.block && !(pa.first && pb.last) {
+            (pa.source.0, pb.source.0)
+        } else {
+            (
+                if pa.first { pa.block.0 } else { pa.source.0 },
+                if pb.last { pb.block.1 } else { pb.source.1 },
+            )
+        };
+        let text = self.source_lines(first, last);
+        let lines = text.lines().count();
+        (text, lines)
+    }
+
+    /// Shows pieces `a` to `b` selected, scrolling to `b` if it's off
+    /// screen.
+    pub fn select_pieces(&mut self, a: usize, b: usize) {
+        let pieces = self.pieces();
+        let Some((first, last)) = Self::span(&pieces, a, b) else {
+            return;
+        };
+        self.selection = Some((pieces[first].rendered.0, pieces[last].rendered.1));
+        let cursor = pieces[b].rendered;
+        let height = self.height.max(1);
+        if cursor.0 < self.top {
+            self.jump_to(cursor.0);
+        } else if cursor.1 >= self.top + height {
+            self.jump_to((cursor.1 + 1).saturating_sub(height));
+        }
     }
 
     /// The source line (1-based) at the top of the screen, on whichever
@@ -963,6 +1176,48 @@ mod tests {
     use super::*;
 
     const MD: &str = "# Title\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nOne paragraph that is long enough to wrap across several rendered lines at a narrow width.\n\nlast\n";
+
+    const COPY: &str = "# Top\n\nintro\n\n## One\n\n- a\n- b\n\n```sh\nx\ny\n```\n\n### Deeper\n\ndeep\n\n## Two\n\ntwo\n";
+
+    fn copyable() -> Doc {
+        let mut doc = Doc::new(COPY.into());
+        doc.layout(40, &Theme::plain());
+        doc.height = 40;
+        doc
+    }
+
+    #[test]
+    fn copies_a_section_with_the_ones_under_it() {
+        let doc = copyable();
+        let one = doc.headings().iter().position(|h| h.text == "One").unwrap();
+        assert_eq!(
+            doc.section_source(one).unwrap(),
+            "## One\n\n- a\n- b\n\n```sh\nx\ny\n```\n\n### Deeper\n\ndeep\n"
+        );
+        let two = doc.headings().len() - 1;
+        assert_eq!(doc.section_source(two).unwrap(), "## Two\n\ntwo\n");
+        assert_eq!(doc.section_source(0).unwrap(), COPY);
+    }
+
+    #[test]
+    fn copies_pieces_whole_where_they_cover_a_block() {
+        let doc = copyable();
+        let text = |a, b| doc.pieces_source(a, b).0;
+        // Headings, paragraphs, list items and lines of code.
+        assert_eq!(doc.pieces().len(), 11);
+        let (a, b, x, y) = (3, 4, 5, 6);
+        assert_eq!(text(a, a), "- a\n");
+        // All of the list, and all of the code block, with its fences.
+        assert_eq!(text(a, b), "- a\n- b\n");
+        assert_eq!(text(x, y), "```sh\nx\ny\n```\n");
+        assert_eq!(text(y, x), "```sh\nx\ny\n```\n", "either way round");
+        // Part of it, just the code.
+        assert_eq!(text(x, x), "x\n");
+        assert_eq!(text(y, y), "y\n");
+        // Into it from outside, all of it.
+        assert_eq!(text(b, x), "- b\n\n```sh\nx\ny\n```\n");
+        assert_eq!(text(y, 7), "```sh\nx\ny\n```\n\n### Deeper\n");
+    }
 
     fn laid_out(width: usize) -> Doc {
         let theme = Theme::plain();

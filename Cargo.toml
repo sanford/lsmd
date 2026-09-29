@@ -14,6 +14,9 @@ categories = ["command-line-utilities", "text-processing"]
 # terminal when the document comes in on stdin. Keep in step with ratatui's.
 crossterm = { version = "0.29.0", features = ["use-dev-tty"] }
 clap = { version = "4.6.7", features = ["derive"] }
+# --completions and --man.
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
 comrak = { version = "0.55.0", default-features = false }
 ignore = "0.4.33"
 nucleo-matcher = "0.3.1"
@@ -40,3 +43,7 @@ base64 = "0.22"
 
 [dev-dependencies]
 insta = "1.48.0"
+
+[target."cfg(unix)".dependencies]
+# Ctrl-Z: stopping lsmd the way the shell would.
+libc = "0.2.189"

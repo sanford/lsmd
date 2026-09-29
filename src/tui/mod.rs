@@ -1,7 +1,9 @@
 //! The interactive browser and reader.
 
+mod copy;
 mod found;
 mod links;
+mod menu;
 mod mouse;
 mod nav;
 mod outline;
@@ -11,13 +13,13 @@ mod themes;
 mod tree;
 
 use crate::doc::{Doc, Side, SourceSide, Split};
+use crate::editor;
 use crate::files::{self, Entry};
 use crate::index::{self, Index};
 use crate::omarchy::Follow;
 use crate::theme::{Choice, Mode, Theme};
 use crate::watch::Watch;
 use crate::wrap;
-use crate::{clipboard, editor};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -72,6 +74,8 @@ pub struct Settings {
     pub images: bool,
     /// How many lines `j` and `k` scroll.
     pub scroll: usize,
+    /// Draw headings big, where the terminal can.
+    pub big_headings: bool,
     /// The theme asked for, by flag or config.
     pub choice: Choice,
     /// Colors come from Omarchy's theme, and follow it.
@@ -101,10 +105,13 @@ pub fn run(source: Source, theme: Theme, settings: Settings) -> io::Result<()> {
         if app.picker.is_some() {
             crate::picture::enable();
         }
-        // A terminal may print some of the questions it doesn't know: draw
-        // the whole screen afresh over them.
-        terminal.clear()?;
     }
+    if settings.big_headings && crate::sizing::detect() {
+        crate::sizing::enable();
+    }
+    // A terminal may print some of the questions it doesn't know: draw the
+    // whole screen afresh over them.
+    terminal.clear()?;
     app.mouse_on = settings.mouse;
     app.by_time = settings.by_date;
     app.outline_pane = settings.outline;
@@ -123,6 +130,16 @@ pub fn run(source: Source, theme: Theme, settings: Settings) -> io::Result<()> {
     set_mouse(app.mouse_on, false);
     ratatui::restore();
     result
+}
+
+/// Stops lsmd, as Ctrl-Z does outside raw mode, till the shell continues it
+/// with `fg`.
+fn stop() {
+    #[cfg(unix)]
+    // SAFETY: raise only sends a signal to this process.
+    unsafe {
+        libc::raise(libc::SIGTSTP);
+    }
 }
 
 /// Turns mouse reporting on or off, if lsmd uses the mouse.
@@ -271,6 +288,14 @@ struct App {
     flash: Option<String>,
     /// A file to open in the editor, at a line, once the key's handled.
     edit: Option<(PathBuf, usize)>,
+    /// Ctrl-Z was pressed: stop, once the key's handled.
+    suspend: bool,
+    /// The piece of the document a drag started on.
+    drag_from: Option<usize>,
+    /// Where big headings were drawn last frame.
+    big_drawn: Vec<Rect>,
+    /// Draw the screen again from scratch.
+    redraw: bool,
     /// The mouse is in use.
     mouse_on: bool,
     /// A search of every file under way, and its query.
@@ -349,6 +374,10 @@ impl App {
             last_search: String::new(),
             flash: None,
             edit: None,
+            suspend: false,
+            drag_from: None,
+            big_drawn: Vec::new(),
+            redraw: false,
             grep: None,
             mouse_on: false,
             text_search: Default::default(),
@@ -392,7 +421,7 @@ impl App {
         loop {
             self.receive();
             self.preview_theme();
-            terminal.draw(|f| self.draw(f))?;
+            self.frame(terminal)?;
             // While scanning or indexing, wake up now and then to show
             // what's new.
             let busy = self.scan.is_some() || self.indexing.is_some() || self.grep.is_some();
@@ -421,17 +450,53 @@ impl App {
             }
             if let Some((path, line)) = self.edit.take() {
                 // Hand the terminal to the editor until it's done.
-                set_mouse(self.mouse_on, false);
-                ratatui::restore();
-                let result = editor::edit(&path, line);
-                *terminal = ratatui::init();
-                set_mouse(self.mouse_on, true);
-                terminal.clear()?;
+                let result = self.hand_over(terminal, || editor::edit(&path, line))?;
                 if let Err(e) = result {
                     self.flash = Some(format!("Couldn't edit: {e}"));
                 }
             }
+            if std::mem::take(&mut self.suspend) {
+                self.hand_over(terminal, stop)?;
+            }
         }
+    }
+
+    /// Draws the screen. When big headings have moved, draws it again from
+    /// scratch, since the terminal clears the whole of one when any of it
+    /// is written over; all at once, so the first draw never shows.
+    fn frame(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        use ratatui::crossterm::execute;
+        use ratatui::crossterm::terminal::{
+            BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate,
+        };
+        let sync = crate::sizing::enabled();
+        if sync {
+            execute!(io::stdout(), BeginSynchronizedUpdate)?;
+        }
+        terminal.draw(|f| self.draw(f))?;
+        if std::mem::take(&mut self.redraw) {
+            // Not terminal.clear(), which asks the terminal where the cursor
+            // is: a wait for its answer, every time, over ssh. Swapping
+            // leaves both buffers blank, so everything's drawn.
+            execute!(io::stdout(), Clear(ClearType::All))?;
+            terminal.swap_buffers();
+            terminal.draw(|f| self.draw(f))?;
+        }
+        if sync {
+            execute!(io::stdout(), EndSynchronizedUpdate)?;
+        }
+        Ok(())
+    }
+
+    /// Gives the terminal back as it was while `f` runs, then takes it again.
+    fn hand_over<T>(&self, terminal: &mut DefaultTerminal, f: impl FnOnce() -> T) -> io::Result<T> {
+        set_mouse(self.mouse_on, false);
+        ratatui::restore();
+        let result = f();
+        *terminal = ratatui::init();
+        set_mouse(self.mouse_on, true);
+        terminal.clear()?;
+        Ok(result)
     }
 
     /// Takes in files the scan has found since last time, and the link
@@ -772,26 +837,6 @@ impl App {
         self.edit = Some((path, line));
     }
 
-    fn copy_code(&mut self) {
-        let Some(block) = self.current().and_then(|d| d.code_on_screen()) else {
-            self.flash = Some("No code block on screen".into());
-            return;
-        };
-        let lines = block.code.lines().count();
-        let what = match block.lang.as_str() {
-            "" => format!("{lines} line{}", if lines == 1 { "" } else { "s" }),
-            lang => format!(
-                "{lines} line{} of {lang}",
-                if lines == 1 { "" } else { "s" }
-            ),
-        };
-        let code = block.code.clone();
-        self.flash = Some(match clipboard::copy(&code) {
-            Ok(how) => format!("Copied {what} {how}"),
-            Err(e) => format!("Couldn't copy: {e}"),
-        });
-    }
-
     /// `.`: shows or hides hidden files, scanning again, and keeping the
     /// selection where it can.
     fn toggle_hidden(&mut self) {
@@ -821,26 +866,6 @@ impl App {
             }
             .into(),
         );
-    }
-
-    fn copy_path(&mut self) {
-        let folder = self.selected_folder().zip(self.root.as_ref());
-        let Some(path) = folder
-            .map(|(dir, root)| {
-                dir.split('/')
-                    .filter(|c| !c.is_empty())
-                    .fold(root.clone(), |p, c| p.join(c))
-            })
-            .or_else(|| self.current_path())
-        else {
-            self.flash = Some("Standard input has no path".into());
-            return;
-        };
-        let path = path.display().to_string();
-        self.flash = Some(match clipboard::copy(&path) {
-            Ok(how) => format!("Copied {path} {how}"),
-            Err(e) => format!("Couldn't copy: {e}"),
-        });
     }
 
     /// The side of the document that scrolls.
@@ -891,8 +916,7 @@ impl App {
     fn view_key(&mut self, key: KeyEvent, ctrl: bool) -> bool {
         match key.code {
             KeyCode::Char('e') if !ctrl => self.start_edit(),
-            KeyCode::Char('y') if !ctrl => self.copy_code(),
-            KeyCode::Char('Y') => self.copy_path(),
+            KeyCode::Char('c') if !ctrl => self.open_copy(None),
             KeyCode::Char('O') if self.focus == Focus::Reader => self.focus_outline(false),
             KeyCode::Char('O') => self.outline_pane = !self.outline_pane,
             KeyCode::Char('T') => self.open_themes(),
@@ -926,6 +950,10 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('c') {
             return true;
+        }
+        if ctrl && key.code == KeyCode::Char('z') && cfg!(unix) {
+            self.suspend = true;
+            return false;
         }
         self.flash = None;
         if self.help {
@@ -1158,6 +1186,13 @@ impl App {
             draw_help(f);
         }
         self.theme.paint(f.buffer_mut());
+        // Last, so it's drawn with the colors on screen, over what's
+        // still there to see.
+        let big = crate::sizing::apply(f.buffer_mut());
+        if big != self.big_drawn {
+            self.big_drawn = big;
+            self.redraw = true;
+        }
     }
 
     fn draw_header(&mut self, f: &mut Frame, area: Rect) {
@@ -1763,6 +1798,7 @@ fn draw_help(f: &mut Frame) {
             "Back a document, then to the list (esc quits there)",
         ),
         ("q", "Quit"),
+        ("^z", "Suspend: fg in the shell comes back"),
         ("] [", "Next / previous heading"),
         ("o", "Outline: the text follows as you move (/ filters)"),
         ("O", "Keep the outline open beside the text"),
@@ -1770,7 +1806,7 @@ fn draw_help(f: &mut Frame) {
         ("s", "Search the text of every file"),
         ("T", "Pick a color theme"),
         ("e", "Edit the file in $EDITOR, at this point"),
-        ("y Y", "Copy the code on screen / the file's path"),
+        ("c", "Copy: code, section, all, a selection, link, path"),
         ("/ n N", "Search; next / previous match"),
         ("^s ^r", "Search forward / back; typing: next / previous"),
         ("f", "Follow a link (type the letters shown on it)"),

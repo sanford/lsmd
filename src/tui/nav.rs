@@ -1,6 +1,8 @@
 //! Getting around documents: search, headings and the outline, and
 //! following links, with a history to go back through.
 
+use super::copy::Action;
+use super::menu::{self, Menu};
 use super::picker::{Outcome, Picker, Target};
 use super::{App, Focus};
 use crate::files;
@@ -21,12 +23,19 @@ pub enum Prompt {
         from: usize,
         forward: bool,
     },
-    /// Choosing a link by its hint letters.
-    Hints { typed: String },
+    /// Choosing a link by its hint letters, or a code block to copy.
+    Hints { typed: String, code: bool },
+    /// A menu of actions: what to copy, or whether to open a link.
+    Menu(Menu<Action>),
+    /// Selecting pieces of the document to copy, from `anchor` to `cursor`
+    /// (see `Doc::pieces`); `drag` while the mouse is doing it.
+    Select {
+        anchor: usize,
+        cursor: usize,
+        drag: bool,
+    },
     /// The outline or the links panel.
     Pick(Picker),
-    /// Confirming opening something outside lsmd.
-    Open(crate::open::Target),
     /// Typing a search of every file's text.
     Grep { query: String },
 }
@@ -154,7 +163,7 @@ impl App {
                     forward,
                 });
             }
-            Prompt::Hints { mut typed } => {
+            Prompt::Hints { mut typed, code } => {
                 let KeyCode::Char(c) = key.code else {
                     {
                         self.clear_hints();
@@ -173,9 +182,13 @@ impl App {
                 let partial = doc.hints.iter().any(|h| h.label.starts_with(&typed));
                 if let Some(url) = url {
                     self.clear_hints();
-                    self.follow(&url);
+                    if code {
+                        self.copy_code(url.parse().unwrap_or(0));
+                    } else {
+                        self.follow(&url);
+                    }
                 } else if partial {
-                    self.prompt = Some(Prompt::Hints { typed });
+                    self.prompt = Some(Prompt::Hints { typed, code });
                 } else {
                     self.clear_hints();
                 }
@@ -187,6 +200,16 @@ impl App {
                 Outcome::Choose(target) => self.go(target),
                 Outcome::Quit => return true,
             },
+            Prompt::Menu(mut menu) => match menu.key(key) {
+                menu::Outcome::Stay => self.prompt = Some(Prompt::Menu(menu)),
+                menu::Outcome::Close => {}
+                menu::Outcome::Choose(action) => self.act(action),
+            },
+            Prompt::Select {
+                anchor,
+                cursor,
+                drag: _,
+            } => self.select_key(key, anchor, cursor),
             Prompt::Grep { mut query } => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.start_grep(query),
@@ -200,14 +223,6 @@ impl App {
                 }
                 _ => self.prompt = Some(Prompt::Grep { query }),
             },
-            Prompt::Open(target) => {
-                if matches!(key.code, KeyCode::Char('y' | 'Y') | KeyCode::Enter) {
-                    self.flash = Some(match crate::open::open(&target) {
-                        Ok(()) => format!("Opened {}", target.what),
-                        Err(e) => format!("Couldn't open {}: {e}", target.what),
-                    });
-                }
-            }
         }
         false
     }
@@ -229,10 +244,11 @@ impl App {
         doc.set_hints(hints);
         self.prompt = Some(Prompt::Hints {
             typed: String::new(),
+            code: false,
         });
     }
 
-    fn clear_hints(&mut self) {
+    pub(super) fn clear_hints(&mut self) {
         if let Some(doc) = self.current() {
             doc.set_hints(Vec::new());
         }
@@ -276,7 +292,7 @@ impl App {
         let Some(doc) = self.current() else { return };
         let Some(path) = render::local_path(url) else {
             match crate::open::web(url) {
-                Ok(target) => self.prompt = Some(Prompt::Open(target)),
+                Ok(target) => self.ask_open(target),
                 Err(why) => self.flash = Some(why),
             }
             return;
@@ -300,7 +316,7 @@ impl App {
         }
         if !target.is_file() || !files::is_markdown(&target) {
             match crate::open::file(&target) {
-                Ok(target) => self.prompt = Some(Prompt::Open(target)),
+                Ok(target) => self.ask_open(target),
                 Err(why) => self.flash = Some(why),
             }
             return;
@@ -309,6 +325,9 @@ impl App {
     }
 
     pub(super) fn draw_picker(&mut self, f: &mut Frame) {
+        if let Some(Prompt::Menu(menu)) = &mut self.prompt {
+            menu.draw(f);
+        }
         if let Some(Prompt::Pick(picker)) = &mut self.prompt {
             picker.draw(f);
         }
@@ -384,11 +403,20 @@ impl App {
                     Span::raw(format!("  {status}")).dim(),
                 ])
             }
-            Prompt::Hints { typed } => Line::from(vec![
-                " Follow link: ".bold(),
+            Prompt::Hints { typed, code } => Line::from(vec![
+                if *code {
+                    " Copy code: ".bold()
+                } else {
+                    " Follow link: ".bold()
+                },
                 Span::raw(format!("type its letters {typed}")),
                 "  esc cancels".dim(),
             ]),
+            Prompt::Menu(_) => Line::from(" key or ↑↓ ⏎ to choose  esc close".dim()),
+            Prompt::Select { anchor, cursor, .. } => {
+                let (anchor, cursor) = (*anchor, *cursor);
+                self.select_footer(anchor, cursor)
+            }
             Prompt::Pick(_) => Line::from(" ↑↓ move  / filter  ⏎ go  esc close  q quit".dim()),
             Prompt::Grep { query } => Line::from(vec![
                 " Search all files: ".bold(),
@@ -396,20 +424,13 @@ impl App {
                 "▏".slow_blink(),
                 "  ⏎ search  esc cancel".dim(),
             ]),
-            Prompt::Open(target) => Line::from(vec![
-                " Open ".bold(),
-                Span::raw(target.what.clone()),
-                "? ".bold(),
-                "y/n  ".dim(),
-                Span::raw(target.target.clone()).dim(),
-            ]),
         };
         Some(line)
     }
 }
 
 /// `n` distinct labels, all the same length, from [`HINT_KEYS`].
-fn hint_labels(n: usize) -> Vec<String> {
+pub(super) fn hint_labels(n: usize) -> Vec<String> {
     let keys: Vec<char> = HINT_KEYS.chars().collect();
     let mut len = 1;
     while keys.len().pow(len) < n {

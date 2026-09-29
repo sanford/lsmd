@@ -34,7 +34,7 @@ Documentation piles up. A project that's been worked on for a while, especially 
 
 ![A design document with two Mermaid diagrams drawn in place: a flowchart of the capture pipeline, and a sequence diagram of saving, scrolling with the text](docs/images/diagrams.png)
 
-It reads well, too. Text uses the full width of the terminal, and tables, code (long lines wrap, marked `↪`, so there's no scrolling sideways), task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `S` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading, and `#` numbers the text with the lines it comes from.
+It reads well, too. In Kitty, top-level headings are drawn at twice the size. Text uses the full width of the terminal, and tables, code (long lines wrap, marked `↪`, so there's no scrolling sideways), task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `S` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading, and `#` numbers the text with the lines it comes from.
 
 `lsmd` runs on macOS, Linux and Windows. When its output isn't a terminal, `lsmd FILE` prints the rendered document and `lsmd` lists the files, for scripts.
 
@@ -118,7 +118,7 @@ Reading:
 | `/` `n` `N` | Search this document; next and previous match |
 | `]` `[` | Next and previous heading |
 | `o` | Outline: `↑` `↓` `j` `k` go through the headings with the text following as you move, `/` filters them, `Enter` reads from there, `Esc` goes back to where you were |
-| `O` | The same outline, kept open beside the document, highlighting the section you're reading. `Enter` gives the keyboard back to the text, `O` gives it to the outline again, and `O` from the outline closes it |
+| `O` | The same outline, kept open beside the document, highlighting the section you're reading. `Enter` gives the keyboard back to the text, `O` gives it to the outline again, and `O` from the outline closes it. In either, `c` copies, with `s` and `l` taking the heading you're on |
 | `f` | Follow a link: type the letters drawn on it |
 | `L` | Links: what this links to, and what links here (in this and the other popups: `↑` `↓` `j` `k` move, `/` filters, `Enter` goes) |
 | `Esc` `Backspace` `←` `h` | Back to where you were before following a link; then the list |
@@ -134,28 +134,42 @@ Anywhere:
 | `Ctrl-W` | Scroll the source side or the rendered side |
 | `<` `>` | Move the divider |
 | `e` | Edit the file in `$VISUAL` or `$EDITOR`, at the line you're reading |
-| `y` `Y` | Copy the code block on screen, or the file's path |
+| `c` | Copy: then `c` a code block, `s` the section, `a` the whole document, `v` a selection, `l` a link to the section, `p` the path, `P` the full path (see [Copying](#copying)) |
 | `\` | Keep the file list on screen while reading |
 | `T` | Pick a color theme |
 | `?` | All of the above |
+| `Ctrl-Z` | Suspend, back to the shell; `fg` comes back (not on Windows) |
 
 Emacs keys work everywhere too: `Ctrl-N` `Ctrl-P` move down and up, `Ctrl-V` `Alt-V` a page, `Alt-<` `Alt->` to the ends, and `Ctrl-G` is `Esc`. In a document, `Ctrl-S` and `Ctrl-R` search forward and backward; while you type, they go to the next and previous match, and `Ctrl-S` on an empty search repeats the last one.
 
-The mouse works too: the wheel scrolls what's under it, the scrollbar and the outline jump where you click, clicking a file selects it and clicking again opens it, and clicking a link follows it. `--no-mouse` leaves the mouse to the terminal, so you can select text without holding a modifier key.
+The mouse works too: the wheel scrolls what's under it, the scrollbar and the outline jump where you click, clicking a file selects it and clicking again opens it, clicking a link follows it, and dragging over the text copies what it covers, as Markdown. `--no-mouse` leaves the mouse to the terminal, so you can select text without holding a modifier key.
 
 ### Links between documents
 
-The header shows how the document on screen is connected, like `3 linked docs · linked from 2`, and `L` lists those documents with their titles, along with links to sections, other files and the web. Following a link to another Markdown file opens it in `lsmd`. Web and email links open in your browser or mail app after you confirm, with the site named in the question; images, PDFs and other documents open in their default app the same way. `lsmd` won't open anything else a link points to, such as a program, a script or another app's link, since the documents you read may be someone else's.
+The header shows how the document on screen is connected, like `3 linked docs · linked from 2`, and `L` lists those documents with their titles, along with links to sections, other files and the web. Following a link to another Markdown file opens it in `lsmd`. Web and email links open in your browser or mail app after you confirm, with the site named in the question, or you can copy the address instead; images, PDFs and other documents open in their default app the same way. `lsmd` won't open anything else a link points to, such as a program, a script or another app's link, since the documents you read may be someone else's.
 
 "Linked from" comes from an index of the links between all the Markdown files under the directory you're browsing. It's built in the background when `lsmd` starts, kept up to date as files change, and saved in `~/.lsmd/index/` so the next start only re-reads files that changed.
 
-### Copying over SSH
+### Copying
 
-`y` and `Y` use the system clipboard (`pbcopy`, `wl-copy`, `xclip`, `xsel` or `clip`). Over SSH they ask your terminal to do the copying instead, with an OSC 52 escape sequence, so the text lands on your own machine. Most modern terminals support this; in tmux, it needs `set -g set-clipboard on`. macOS Terminal doesn't support it.
+`c` asks what to copy, in a menu that shows just what each choice will copy: the section's name and length, the link, the path. Its letters copy at once, so `cs` copies the section; `↑` `↓` and `Enter`, or a click, work too. Everything but a path is copied as Markdown, as it's written, rather than as it's shown, so it pastes cleanly into an issue, a chat or another document:
+
+- `c`: a code block. With more than one on screen, each gets a letter to type, like links do for `f`.
+- `s`: the section you're reading, the one the header names after `§`, with the sections under it.
+- `a`: the whole document.
+- `v`: pieces of it. `j` and `k` take in more or fewer paragraphs, list items, table rows or lines of code, and `c` or `Enter` copies them. What you take in all of, like a whole code block or list, comes with its fences and markers. Dragging over the text with the mouse does the same, copying when you let go.
+- `l`: a link to the section, like `[Install](docs/setup.md#install)`, with the path from the folder you're browsing: for pasting into another document, or telling someone (or an agent) where to look.
+- `p` and `P`: the file's path, from the folder you're browsing or in full. In the list, the selected folder's.
+
+In the outline, `c` works the same, with `s` and `l` taking the heading you're on, so any section is two keys away.
+
+Copying uses the system clipboard (`pbcopy`, `wl-copy`, `xclip`, `xsel` or `clip`). Over SSH they ask your terminal to do the copying instead, with an OSC 52 escape sequence, so the text lands on your own machine. Most modern terminals support this; in tmux, it needs `set -g set-clipboard on`. macOS Terminal doesn't support it.
 
 ### Colors
 
 `T` picks a color theme: the screen changes as you move through the list, `Enter` keeps the one you're on and saves it in `~/.lsmd/config.toml`, and `Esc` goes back. The themes are [Omarchy](https://omarchy.org)'s: `tokyo-night`, `catppuccin`, `catppuccin-latte`, `gruvbox`, `nord`, `rose-pine`, `kanagawa`, `everforest` and more. A theme colors everything, background included, and your terminal goes back to its own colors when `lsmd` exits. `--theme` picks one too.
+
+Themes of your own go in `~/.lsmd/themes/`, in Omarchy's `colors.toml` format: as `NAME.toml`, or as a folder `NAME/` with a `colors.toml` in it, so an Omarchy theme's folder can be copied or linked there as it is. They're listed with the others, and one named like a built-in theme takes its place.
 
 Without one (`auto`, `dark` or `light`), text uses your terminal's own colors, and code is colored by a built-in dark or light theme; `auto` picks whichever suits the terminal's background.
 
@@ -163,7 +177,7 @@ On Omarchy, the desktop's theme wins: code takes its colors from it, and changes
 
 ## Configuration
 
-Defaults for the options can go in `~/.lsmd/config.toml`. Everything is optional, and flags win over it:
+Defaults for the options can go in `~/.lsmd/config.toml`. `lsmd --edit-config` opens it in your editor, starting it with every setting listed if there isn't one yet. Everything is optional, and flags win over it:
 
 ```toml
 theme = "dark"          # auto, dark, light or a theme like "tokyo-night"
@@ -176,7 +190,18 @@ sort = "date"           # name or date
 outline = true          # show the outline beside documents
 images = false          # show diagrams as code and images as text
 scroll = 1              # lines j and k scroll (default 2)
+big-headings = false    # keep headings the size of the text, even in Kitty
 ```
+
+### Shell completions and man page
+
+`lsmd --completions SHELL` prints the script that completes `lsmd`'s options, for `bash`, `zsh`, `fish`, `elvish` or `powershell`. For zsh, say:
+
+```sh
+lsmd --completions zsh > ~/.zfunc/_lsmd   # any folder in your $fpath
+```
+
+`lsmd --man` prints the man page.
 
 ## License
 

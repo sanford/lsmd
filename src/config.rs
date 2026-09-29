@@ -12,7 +12,11 @@
 //! outline = true          # show the outline pane beside documents
 //! images = false          # show diagrams as code and images as text
 //! scroll = 1              # lines j and k scroll (default 2)
+//! big-headings = false    # headings at the text's size, even where they can be bigger
 //! ```
+//!
+//! `lsmd --edit-config` opens it in the editor, starting it from
+//! [`TEMPLATE`] if there isn't one.
 
 use crate::doc::SourceSide;
 use crate::theme::Choice;
@@ -39,11 +43,56 @@ pub struct Config {
     pub outline: Option<bool>,
     pub images: Option<bool>,
     pub scroll: Option<usize>,
+    pub big_headings: Option<bool>,
+}
+
+/// A new config file: every setting, commented out, at its default.
+pub const TEMPLATE: &str = r#"# lsmd's settings. Everything is optional, and command-line flags win.
+# Take the # off a line to change it.
+
+# auto, dark, light, or a theme's name, like "tokyo-night" (T shows them all).
+# Themes of your own go in ~/.lsmd/themes/, as NAME.toml in Omarchy's
+# colors.toml format.
+# theme = "auto"
+
+# Wrap text at this many columns (0: the terminal's width).
+# width = 0
+
+# Start with the source shown beside the text, and on which side.
+# source = false
+# source-side = "right"
+
+# Scroll and click with the mouse. Off, the terminal's own text selection
+# works without holding a modifier key.
+# mouse = true
+
+# List hidden and .gitignored files too.
+# all = false
+
+# Sort the list by name or date.
+# sort = "name"
+
+# Show the outline beside documents.
+# outline = false
+
+# Show diagrams and images as pictures, where the terminal can.
+# images = true
+
+# Lines j and k scroll.
+# scroll = 2
+
+# Draw headings bigger, in terminals that can (Kitty).
+# big-headings = true
+"#;
+
+/// `~/.lsmd`, where the config file and the user's themes go.
+pub fn dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(".lsmd"))
 }
 
 pub fn path() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
-    Some(PathBuf::from(home).join(".lsmd").join("config.toml"))
+    Some(dir()?.join("config.toml"))
 }
 
 /// Reads the config file. A missing file is fine; a broken one is reported
@@ -174,6 +223,21 @@ mod tests {
         assert_eq!(c.all, Some(true));
         assert_eq!(c.scroll, Some(3));
         assert_eq!(c.sort, Some(Sort::Date));
+    }
+
+    #[test]
+    fn the_template_is_all_comments_and_every_line_parses() {
+        assert!(parse(TEMPLATE).unwrap().theme.is_none());
+        let settings: String = TEMPLATE
+            .lines()
+            .filter_map(|l| l.strip_prefix("# "))
+            .filter(|l| l.contains(" = "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let c = parse(&settings).unwrap();
+        assert_eq!(c.theme, Some(Choice::Mode(crate::theme::Mode::Auto)));
+        assert_eq!(c.big_headings, Some(true));
+        assert_eq!(settings.lines().count(), 11, "{settings}");
     }
 
     #[test]

@@ -1,8 +1,10 @@
-//! The mouse: the wheel scrolls what's under the pointer, and clicks
-//! choose files and follow links.
+//! The mouse: the wheel scrolls what's under the pointer, clicks choose
+//! files and follow links, and dragging over the text copies what it
+//! covers, as Markdown.
 
 use super::nav::Prompt;
 use super::{App, Focus};
+use crate::doc::Side;
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -19,12 +21,29 @@ impl App {
             MouseEventKind::ScrollUp => Some(false),
             _ => None,
         };
+        // A menu takes clicks: on an item, it does it; outside, it closes.
+        if let Some(Prompt::Menu(menu)) = &mut self.prompt {
+            if m.kind == MouseEventKind::Down(MouseButton::Left) {
+                match menu.click(x, y) {
+                    super::menu::Outcome::Stay => {}
+                    super::menu::Outcome::Close => self.prompt = None,
+                    super::menu::Outcome::Choose(action) => {
+                        self.prompt = None;
+                        self.act(action);
+                    }
+                }
+            }
+            return;
+        }
         // A popup takes the wheel for its list; clicks outside close it.
         if let Some(Prompt::Pick(picker)) = &mut self.prompt {
             if let Some(down) = down {
                 let code = if down { KeyCode::Down } else { KeyCode::Up };
                 picker.key(KeyEvent::new(code, KeyModifiers::NONE), false);
             }
+            return;
+        }
+        if self.drag_mouse(m) {
             return;
         }
         // The scrollbar and the outline pane take clicks and drags.
@@ -66,6 +85,55 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Dragging over the rendered text selects the pieces it covers, and
+    /// letting go copies them. Returns whether it took the event.
+    fn drag_mouse(&mut self, m: MouseEvent) -> bool {
+        let y = m.row;
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // A click ends a selection made with the keyboard.
+                if matches!(self.prompt, Some(Prompt::Select { .. })) {
+                    self.prompt = None;
+                    self.end_select();
+                }
+                let on_text = self
+                    .current()
+                    .is_some_and(|d| d.side_at(m.column, y) == Some(Side::Rendered));
+                self.drag_from = on_text
+                    .then(|| self.current().and_then(|d| d.piece_at(y)))
+                    .flatten();
+                false
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let Some(anchor) = self.drag_from else {
+                    return false;
+                };
+                let cursor = match &self.prompt {
+                    Some(Prompt::Select { cursor, .. }) => *cursor,
+                    _ => anchor,
+                };
+                let cursor = self.current().and_then(|d| d.piece_at(y)).unwrap_or(cursor);
+                self.select(anchor, cursor, true);
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.drag_from = None;
+                let Some(Prompt::Select {
+                    anchor,
+                    cursor,
+                    drag: true,
+                }) = self.prompt
+                else {
+                    return false;
+                };
+                self.prompt = None;
+                self.copy_selection(anchor, cursor);
+                true
+            }
+            _ => false,
         }
     }
 

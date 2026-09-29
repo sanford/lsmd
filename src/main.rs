@@ -16,12 +16,13 @@ mod palettes;
 mod picture;
 mod render;
 mod safe;
+mod sizing;
 mod theme;
 mod tui;
 mod watch;
 mod wrap;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use doc::SourceSide;
 use std::io::{self, ErrorKind, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -35,7 +36,8 @@ use theme::{Choice, Mode, Theme};
 /// isn't a terminal, prints the rendered file, or the list of files.
 ///
 /// Defaults for the options can go in ~/.lsmd/config.toml, e.g. `theme =
-/// "dark"`, `width = 100`, `source-side = "left"`, `mouse = false`.
+/// "dark"`, `width = 100`, `source-side = "left"`, `mouse = false`:
+/// `lsmd --edit-config` opens it with every setting listed.
 #[derive(Parser)]
 #[command(version)]
 struct Args {
@@ -70,6 +72,19 @@ struct Args {
     /// tokyo-night, which colors everything
     #[arg(long)]
     theme: Option<Choice>,
+
+    /// Open the config file in $VISUAL or $EDITOR, starting one with every
+    /// setting in it if there isn't one
+    #[arg(long, exclusive = true)]
+    edit_config: bool,
+
+    /// Print the script that completes lsmd's options in SHELL
+    #[arg(long, value_name = "SHELL", exclusive = true)]
+    completions: Option<clap_complete::Shell>,
+
+    /// Print the man page
+    #[arg(long, hide = true, exclusive = true)]
+    man: bool,
 }
 
 fn main() -> ExitCode {
@@ -85,6 +100,19 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args) -> io::Result<()> {
+    if args.edit_config {
+        return edit_config();
+    }
+    if let Some(shell) = args.completions {
+        clap_complete::generate(shell, &mut Args::command(), "lsmd", &mut io::stdout());
+        return Ok(());
+    }
+    if args.man {
+        return clap_mangen::Man::new(Args::command()).render(&mut io::stdout());
+    }
+    for e in palettes::errors() {
+        eprintln!("lsmd: ignoring theme {e}");
+    }
     let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
     let interactive = io::stdout().is_terminal() && !args.plain;
     // Flags win over the config file.
@@ -120,6 +148,7 @@ fn run(args: Args) -> io::Result<()> {
             outline: config.outline.unwrap_or(false),
             images: config.images.unwrap_or(true),
             scroll: config.scroll.unwrap_or(2).max(1),
+            big_headings: config.big_headings.unwrap_or(true),
             choice,
             omarchy: palette.is_some(),
         };
@@ -150,6 +179,22 @@ fn run(args: Args) -> io::Result<()> {
         span.style = theme.recolor(span.style);
     }
     ansi::print(&lines, &mut io::stdout().lock())
+}
+
+/// Opens the config file in the editor, writing the template first if
+/// there's no file, then says whether lsmd can read what was saved.
+fn edit_config() -> io::Result<()> {
+    let path = config::path().ok_or_else(|| io::Error::other("no home directory"))?;
+    if !path.exists() {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, config::TEMPLATE)?;
+    }
+    editor::edit(&path, 1)?;
+    // load() says what's wrong, if anything.
+    config::load();
+    Ok(())
 }
 
 /// Works out what to show from the command line.

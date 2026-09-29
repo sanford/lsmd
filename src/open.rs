@@ -21,7 +21,7 @@ const VIEWABLE: &[&str] = &[
 ];
 
 /// Something that may be opened, and how to describe it when asking.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
     pub target: String,
     /// "example.com in your browser", "diagram.png"
