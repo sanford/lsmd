@@ -12,7 +12,7 @@ That's `lsmd` in a project with 333 Markdown files. The folders come first, each
 
 Documentation piles up. A project that's been worked on for a while, especially with AI agents writing plans and design notes, ends up with hundreds of Markdown files that refer to each other. Reading them one at a time in an editor or a pager loses the thread. `lsmd` is built for following it.
 
-**Search every file.** `/` narrows the list by name as you type, and `s` searches the text of every document in it. The matches come back grouped by file; opening one lands on the match, highlighted, with `n` and `N` for the next ones.
+**Search every file.** `/` narrows the list by name as you type, and a moment after you stop, the files with it in their text follow, most matches first; the preview shows each one's first match. `s` lists every matching line in every file instead, grouped by file. Either way, opening a file lands on the match, highlighted, with `n` and `N` for the next ones.
 
 ![Searching every file for "undo stack": five matches in four files, each line shown with the match highlighted](docs/images/search.png)
 
@@ -30,7 +30,9 @@ Documentation piles up. A project that's been worked on for a while, especially 
 
 **Stays current.** Documents reload as they're edited, keeping your place, so `lsmd` works beside your editor, or beside an agent that's writing. `e` opens your editor at the line you're reading.
 
-It reads well, too. Text uses the full width of the terminal, and tables, code (long lines wrap, marked `↪`, so there's no scrolling sideways), task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `Tab` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading. Mermaid diagrams, and images on their own line that are files in the project (PNG, JPEG, GIF, WebP or SVG), are drawn as pictures in terminals that can show them (iTerm2, Kitty, WezTerm, Ghostty and those with Sixel); elsewhere, and in tmux, diagrams stay as code and images as their descriptions. Images from the web aren't fetched.
+**Diagrams and pictures.** Mermaid diagrams are drawn in the theme's colors, and images in the project are shown where they are: PNG, JPEG, GIF, WebP or SVG, as Markdown or as the `<img>` tags READMEs open their logos with. That works in terminals that can show pictures: iTerm2, Kitty, WezTerm, Ghostty and those with Sixel. Elsewhere, and in tmux, diagrams stay as code and images as their descriptions. Images from the web aren't fetched, so reading a document never reaches out to the internet.
+
+It reads well, too. Text uses the full width of the terminal, and tables, code (long lines wrap, marked `↪`, so there's no scrolling sideways), task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `Tab` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading, and `#` numbers the text with the lines it comes from.
 
 `lsmd` runs on macOS, Linux and Windows. When its output isn't a terminal, `lsmd FILE` prints the rendered document and `lsmd` lists the files, for scripts.
 
@@ -84,7 +86,7 @@ lsmd README.md | less -R   # not a terminal: print it rendered
 lsmd | wc -l         # not a terminal: list the files
 ```
 
-The list starts with the folders, each showing when its newest file changed and how many files are in it, and the files at the top level; every file in the folders follows, with its path. A selected folder shows what's in it beside the list. `→` goes into a folder, listing only what's in it, with `/` and `s` narrowed to it too, and `←` comes back up, to the folder you left; so does `..` at the top of the list. `Space` opens a folder in place, to look inside without going in. Filtering shows the best-matching folders above the matching files.
+The list starts with the folders, each showing when its newest file changed and how many files are in it, and the files at the top level; below a line, every file in the folders follows, with its path. A selected folder shows what's in it beside the list. `→` goes into a folder, listing only what's in it, with `/` and `s` narrowed to it too, and `←` comes back up, to the folder you left; so does `..` at the top of the list. `Space` opens a folder in place, to look inside without going in. Filtering shows the best-matching folders above the files whose names match, and below them, the files with the filter in their text.
 
 `.gitignore`d and hidden files are left out; `-a` includes them, and `.` in the list shows or hides just the hidden ones. `-w 100` caps the text width. `-p` prints without colors, as does setting `NO_COLOR`.
 
