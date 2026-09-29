@@ -119,6 +119,7 @@ fn run(args: Args) -> io::Result<()> {
             by_date: config.sort == Some(config::Sort::Date),
             outline: config.outline.unwrap_or(false),
             images: config.images.unwrap_or(true),
+            scroll: config.scroll.unwrap_or(2).max(1),
             choice,
             omarchy: palette.is_some(),
         };

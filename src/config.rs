@@ -11,6 +11,7 @@
 //! sort = "date"           # name or date
 //! outline = true          # show the outline pane beside documents
 //! images = false          # show diagrams as code and images as text
+//! scroll = 1              # lines j and k scroll (default 2)
 //! ```
 
 use crate::doc::SourceSide;
@@ -37,6 +38,7 @@ pub struct Config {
     pub sort: Option<Sort>,
     pub outline: Option<bool>,
     pub images: Option<bool>,
+    pub scroll: Option<usize>,
 }
 
 pub fn path() -> Option<PathBuf> {
@@ -161,7 +163,7 @@ mod tests {
     #[test]
     fn parses_every_setting() {
         let c = parse(
-            "theme = \"light\"\nwidth = 100\nsource = true\nsource-side = \"left\"\nmouse = false\nall = true\nsort = \"date\"\n",
+            "theme = \"light\"\nwidth = 100\nsource = true\nsource-side = \"left\"\nmouse = false\nall = true\nsort = \"date\"\nscroll = 3\n",
         )
         .unwrap();
         assert_eq!(c.theme, Some(Choice::Mode(crate::theme::Mode::Light)));
@@ -170,6 +172,7 @@ mod tests {
         assert_eq!(c.source_side, Some(SourceSide::Left));
         assert_eq!(c.mouse, Some(false));
         assert_eq!(c.all, Some(true));
+        assert_eq!(c.scroll, Some(3));
         assert_eq!(c.sort, Some(Sort::Date));
     }
 

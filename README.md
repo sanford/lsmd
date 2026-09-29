@@ -113,7 +113,7 @@ Reading:
 
 | Key | |
 |---|---|
-| `↑` `↓` `j` `k` | Scroll a line; with `Shift` (`⇧↑` `⇧↓` `K` `J`), a page |
+| `↑` `↓` `j` `k` | Scroll two lines (`scroll` in the settings); with `Shift` (`⇧↑` `⇧↓` `K` `J`), a page |
 | `Space` `b`, `d` `u`, `g` `G` | Page, half page; top, bottom |
 | `/` `n` `N` | Search this document; next and previous match |
 | `]` `[` | Next and previous heading |
@@ -174,6 +174,7 @@ all = true              # list hidden and .gitignored files too
 sort = "date"           # name or date
 outline = true          # show the outline beside documents
 images = false          # show diagrams as code and images as text
+scroll = 1              # lines j and k scroll (default 2)
 ```
 
 ## License

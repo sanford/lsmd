@@ -67,6 +67,8 @@ pub struct Settings {
     pub outline: bool,
     /// Show diagrams as pictures, where the terminal can.
     pub images: bool,
+    /// How many lines `j` and `k` scroll.
+    pub scroll: usize,
     /// The theme asked for, by flag or config.
     pub choice: Choice,
     /// Colors come from Omarchy's theme, and follow it.
@@ -103,6 +105,7 @@ pub fn run(source: Source, theme: Theme, settings: Settings) -> io::Result<()> {
     app.mouse_on = settings.mouse;
     app.by_time = settings.by_date;
     app.outline_pane = settings.outline;
+    app.scroll = settings.scroll;
     set_mouse(app.mouse_on, true);
     if app.mouse_on {
         // ratatui's panic hook restores the terminal, but doesn't know
@@ -238,6 +241,8 @@ struct App {
     /// `o` opened the pane just while it has the keyboard.
     outline_temporary: bool,
     help: bool,
+    /// How many lines `j` and `k` scroll.
+    scroll: usize,
     /// Show the source beside the rendered document.
     split: bool,
     /// Number the rendered document's lines with their source lines.
@@ -322,6 +327,7 @@ impl App {
             outline_filter: None,
             outline_temporary: false,
             help: false,
+            scroll: 2,
             split: false,
             numbers: false,
             source_focus: false,
@@ -1026,6 +1032,7 @@ impl App {
             _ => {}
         }
         let side = self.side();
+        let lines = self.scroll as isize;
         let Some(doc) = self.current() else {
             return false;
         };
@@ -1042,8 +1049,8 @@ impl App {
             KeyCode::Char('u') if ctrl => doc.scroll_by(-half, side),
             KeyCode::Char('f') if ctrl => doc.scroll_by(page, side),
             KeyCode::Char('b') if ctrl => doc.scroll_by(-page, side),
-            KeyCode::Char('j') | KeyCode::Down | KeyCode::Enter => doc.scroll_by(1, side),
-            KeyCode::Char('k') | KeyCode::Up => doc.scroll_by(-1, side),
+            KeyCode::Char('j') | KeyCode::Down | KeyCode::Enter => doc.scroll_by(lines, side),
+            KeyCode::Char('k') | KeyCode::Up => doc.scroll_by(-lines, side),
             KeyCode::Char('d') => doc.scroll_by(half, side),
             KeyCode::Char('u') => doc.scroll_by(-half, side),
             KeyCode::Char(' ') | KeyCode::PageDown => doc.scroll_by(page, side),
