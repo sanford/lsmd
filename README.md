@@ -32,6 +32,8 @@ Documentation piles up. A project that's been worked on for a while, especially 
 
 **Diagrams and pictures.** Mermaid diagrams are drawn in the theme's colors, and images in the project are shown where they are: PNG, JPEG, GIF, WebP or SVG, as Markdown or as the `<img>` tags READMEs open their logos with. That works in terminals that can show pictures: iTerm2, Kitty, WezTerm, Ghostty and those with Sixel. Elsewhere, and in tmux, diagrams stay as code and images as their descriptions. Images from the web aren't fetched, so reading a document never reaches out to the internet.
 
+![A design document with two Mermaid diagrams drawn in place: a flowchart of the capture pipeline, and a sequence diagram of saving, scrolling with the text](docs/images/diagrams.png)
+
 It reads well, too. Text uses the full width of the terminal, and tables, code (long lines wrap, marked `↪`, so there's no scrolling sideways), task lists, footnotes, GitHub's `> [!NOTE]` alerts and the HTML that READMEs open with all render. `Tab` shows the Markdown source beside the rendered text, scrolled together, for when you're writing rather than reading, and `#` numbers the text with the lines it comes from.
 
 `lsmd` runs on macOS, Linux and Windows. When its output isn't a terminal, `lsmd FILE` prints the rendered document and `lsmd` lists the files, for scripts.
