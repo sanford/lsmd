@@ -132,6 +132,9 @@ pub fn run(source: Source, theme: Theme, settings: Settings) -> io::Result<()> {
     result
 }
 
+/// A symbol no cell drawn has: see `frame`.
+const NOT_ON_SCREEN: &str = "\u{FFFF}";
+
 /// Stops lsmd, as Ctrl-Z does outside raw mode, till the shell continues it
 /// with `fg`.
 fn stop() {
@@ -466,19 +469,21 @@ impl App {
     /// is written over; all at once, so the first draw never shows.
     fn frame(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         use ratatui::crossterm::execute;
-        use ratatui::crossterm::terminal::{
-            BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate,
-        };
+        use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
         let sync = crate::sizing::enabled();
         if sync {
             execute!(io::stdout(), BeginSynchronizedUpdate)?;
         }
         terminal.draw(|f| self.draw(f))?;
         if std::mem::take(&mut self.redraw) {
-            // Not terminal.clear(), which asks the terminal where the cursor
-            // is: a wait for its answer, every time, over ssh. Swapping
-            // leaves both buffers blank, so everything's drawn.
-            execute!(io::stdout(), Clear(ClearType::All))?;
+            // Every cell again, but without clearing the screen: that would
+            // take Kitty's pictures with it, which are sent only once. What
+            // ratatui takes to be on screen is made something that never
+            // is, so nothing is left out as unchanged.
+            terminal.swap_buffers();
+            for cell in &mut terminal.current_buffer_mut().content {
+                cell.set_symbol(NOT_ON_SCREEN);
+            }
             terminal.swap_buffers();
             terminal.draw(|f| self.draw(f))?;
         }
@@ -488,14 +493,20 @@ impl App {
         Ok(())
     }
 
-    /// Gives the terminal back as it was while `f` runs, then takes it again.
-    fn hand_over<T>(&self, terminal: &mut DefaultTerminal, f: impl FnOnce() -> T) -> io::Result<T> {
+    /// Gives the terminal back as it was while `f` runs, then takes it
+    /// again. Its pictures are gone with the screen: they're sent again.
+    fn hand_over<T>(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        f: impl FnOnce() -> T,
+    ) -> io::Result<T> {
         set_mouse(self.mouse_on, false);
         ratatui::restore();
         let result = f();
         *terminal = ratatui::init();
         set_mouse(self.mouse_on, true);
         terminal.clear()?;
+        self.drawn.clear();
         Ok(result)
     }
 

@@ -48,6 +48,12 @@ pub fn picker() -> Option<Picker> {
         ..QueryStdioOptions::default()
     })
     .ok()?;
+    // A terminal that names itself in TERM is that one: Kitty, say,
+    // started from iTerm2 inherits iTerm2's TERM_PROGRAM and LC_TERMINAL.
+    // What it said it can do stands.
+    if own_term() {
+        return ready(picker);
+    }
     // Which terminal this is. iTerm2's variables outlive it: a terminal
     // started from iTerm2 (Terminal.app, say) inherits its LC_TERMINAL, so
     // that only counts when nothing else says (over ssh, say).
@@ -67,13 +73,28 @@ pub fn picker() -> Option<Picker> {
         // it's something else.
         return None;
     }
-    // Half blocks can't draw a diagram's labels legibly: better the text.
+    ready(picker)
+}
+
+/// The picker, unless it'd draw in half blocks, which can't draw a
+/// diagram's labels legibly: better the text.
+fn ready(picker: Picker) -> Option<Picker> {
     if picker.protocol_type() == ProtocolType::Halfblocks {
         return None;
     }
     let size = picker.font_size();
     set_cell(size.width, size.height);
     Some(picker)
+}
+
+/// Whether the terminal says which it is in TERM, or as Kitty does, a
+/// variable of its own: then TERM_PROGRAM may be another's, inherited.
+fn own_term() -> bool {
+    let term = std::env::var("TERM").unwrap_or_default();
+    ["kitty", "ghostty", "wezterm"]
+        .iter()
+        .any(|t| term.contains(t))
+        || std::env::var_os("KITTY_WINDOW_ID").is_some()
 }
 
 /// Terminals that draw iTerm2's pictures, by what they call themselves in
