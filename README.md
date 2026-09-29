@@ -86,7 +86,7 @@ lsmd | wc -l         # not a terminal: list the files
 
 The list starts with the folders, each showing when its newest file changed and how many files are in it, and the files at the top level; every file in the folders follows, with its path. A selected folder shows what's in it beside the list. `→` goes into a folder, listing only what's in it, with `/` and `s` narrowed to it too, and `←` comes back up, to the folder you left; so does `..` at the top of the list. `Space` opens a folder in place, to look inside without going in. Filtering shows the best-matching folders above the matching files.
 
-`.gitignore`d and hidden files are left out; `-a` includes them. `-w 100` caps the text width. `-p` prints without colors, as does setting `NO_COLOR`.
+`.gitignore`d and hidden files are left out; `-a` includes them, and `.` in the list shows or hides just the hidden ones. `-w 100` caps the text width. `-p` prints without colors, as does setting `NO_COLOR`.
 
 ### Keys
 
@@ -97,9 +97,10 @@ In the file list:
 | `↑` `↓` `j` `k` | Move; with `Shift` (`⇧↑` `⇧↓` `K` `J`), a page at a time |
 | `Enter` `→` `l` | Read the selected file, or go into the selected folder |
 | `←` `h` `Backspace` | Up a folder (or choose `..` at the top of the list) |
-| `/` | Filter the list by name (fuzzy) |
+| `/` | Filter the list by name (fuzzy); files with it in their text follow, most matches first |
 | `s` | Search the text of every file in the list |
 | `m` | Sort by name or by date |
+| `.` | Show or hide hidden files |
 | `Space` | On a folder: look inside without going in, or close it |
 | `Space` `b` | Page through the preview |
 | `q` `Esc` | Quit (`Esc` first clears the filter, then goes up a folder) |

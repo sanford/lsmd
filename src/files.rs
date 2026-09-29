@@ -37,20 +37,21 @@ pub fn site_root(root: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-/// Whether the scan would list `path`, a file under `root`: not in a hidden
-/// folder, and not ignored by `.gitignore` and the like, unless `all`. For
-/// files that appear after the scan.
-pub fn listable(root: &Path, path: &Path, all: bool) -> bool {
+/// Whether the scan would list `path`, a file under `root`: not hidden or
+/// in a hidden folder, unless `hidden`, and not ignored by `.gitignore` and
+/// the like, unless `all` (which lists hidden files too). For files that
+/// appear after the scan.
+pub fn listable(root: &Path, path: &Path, all: bool, hidden: bool) -> bool {
     if all {
         return true;
     }
     let Ok(rel) = path.strip_prefix(root) else {
         return false;
     };
-    let hidden = rel
+    let in_hidden = rel
         .components()
         .any(|c| c.as_os_str().to_string_lossy().starts_with('.'));
-    !hidden && !ignored(root, path)
+    (hidden || !in_hidden) && !ignored(root, path)
 }
 
 /// Whether ignore files exclude `path`, applied as the scan applies them:
@@ -87,13 +88,14 @@ fn ignored(root: &Path, path: &Path) -> bool {
 
 /// Walks `root` on a background thread, sending files in batches as it
 /// finds them. The channel closes when the walk is done. With `all`, hidden
-/// and ignored files are included.
-pub fn scan(root: &Path, all: bool) -> Receiver<Vec<Entry>> {
+/// and ignored files are included; with `hidden`, just hidden ones.
+pub fn scan(root: &Path, all: bool, hidden: bool) -> Receiver<Vec<Entry>> {
     let (tx, rx) = mpsc::channel();
     let root = root.to_path_buf();
     thread::spawn(move || {
         let walk = ignore::WalkBuilder::new(&root)
             .standard_filters(!all)
+            .hidden(!all && !hidden)
             .require_git(false)
             .build();
         let mut batch = Vec::new();
@@ -237,7 +239,7 @@ mod tests {
         std::fs::write(dir.join(".git/info/exclude"), "private.md\n").unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         let root = dir.join("docs");
-        let listed = |rel: &str, all| listable(&root, &root.join(rel), all);
+        let listed = |rel: &str, all| listable(&root, &root.join(rel), all, false);
         assert!(listed("a.md", false));
         assert!(listed("sub/b.md", false));
         assert!(!listed("node_modules/pkg/README.md", false));
@@ -247,6 +249,10 @@ mod tests {
         assert!(!listed("private.md", false));
         assert!(!listed(".hidden/c.md", false));
         assert!(listed("node_modules/pkg/README.md", true));
+        let shown = |rel: &str| listable(&root, &root.join(rel), false, true);
+        assert!(shown(".hidden/c.md"));
+        assert!(shown("sub/.d.md"));
+        assert!(!shown("node_modules/pkg/README.md"), "still ignored");
         assert_eq!(site_root(&root), dir);
         std::fs::remove_dir_all(&dir).unwrap();
     }

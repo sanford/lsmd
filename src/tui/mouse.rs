@@ -74,7 +74,7 @@ impl App {
     fn click_list(&mut self, y: u16) {
         let row = usize::from(y.saturating_sub(self.list_area.y));
         let i = self.list.offset() + row;
-        if i >= self.shown.len() {
+        if i >= self.shown.len() || matches!(self.shown[i], super::Shown::Rule(_)) {
             return;
         }
         if self.list.selected() == Some(i) {

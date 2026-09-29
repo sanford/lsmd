@@ -100,14 +100,19 @@ pub fn listing(
     by_time: bool,
 ) -> Vec<Shown> {
     let mut out = rows(files, listed, scope, false, open, by_time);
-    let nested = listed
+    let mut nested = listed
         .iter()
-        .filter(|&&i| files[i].rel[scope.len()..].contains('/'));
+        .filter(|&&i| files[i].rel[scope.len()..].contains('/'))
+        .peekable();
+    if nested.peek().is_some() {
+        out.push(Shown::Rule(""));
+    }
     out.extend(nested.map(|&file| Shown::File {
         file,
         hits: Vec::new(),
         from: scope.len(),
         depth: 0,
+        found: 0,
     }));
     out
 }
@@ -189,6 +194,7 @@ impl Tree<'_> {
                 hits: Vec::new(),
                 from,
                 depth,
+                found: 0,
             });
         }
     }
@@ -244,6 +250,7 @@ pub fn row_width(files: &[Entry], row: &Shown) -> usize {
         } => 1 + indent(*depth) + wrap::width(&files[*file].rel[*from..]),
         Shown::Dir(d) => 1 + 2 * d.depth + 2 + wrap::width(&d.label),
         Shown::Up(to) => 1 + 2 + wrap::width(&up_label(to)),
+        Shown::Rule(label) => 6 + wrap::width(label),
     }
 }
 
@@ -310,6 +317,7 @@ impl App {
             Shown::Up(_) => Some(Pick::Up),
             Shown::File { file, .. } => Some(Pick::File(self.files[*file].path.clone())),
             Shown::Dir(d) => Some(Pick::Dir(d.rel.clone())),
+            Shown::Rule(_) => None,
         }
     }
 
@@ -356,7 +364,7 @@ impl App {
             self.shown.iter().position(|s| match s {
                 Shown::Dir(d) => d.rel.starts_with(&rel),
                 Shown::File { file, .. } => self.files[*file].rel.starts_with(&rel),
-                Shown::Up(_) => false,
+                Shown::Up(_) | Shown::Rule(_) => false,
             })
         })
     }
@@ -382,6 +390,7 @@ impl App {
         self.scope = d.rel.clone();
         self.filter.clear();
         self.typing = false;
+        self.filter_changed();
         self.moved = false;
         self.refresh();
     }
@@ -396,6 +405,7 @@ impl App {
         self.scope = self.parent_scope(&left);
         self.filter.clear();
         self.typing = false;
+        self.filter_changed();
         // Select the folder just left, rather than what was selected in it.
         self.moved = false;
         self.refresh();
@@ -443,6 +453,7 @@ mod tests {
                     file, from, depth, ..
                 } => format!("{}{}", "  ".repeat(*depth), &files[*file].rel[*from..]),
                 Shown::Up(_) => "..".into(),
+                Shown::Rule(_) => "─".into(),
             })
             .collect()
     }

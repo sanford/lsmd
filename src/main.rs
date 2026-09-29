@@ -195,7 +195,10 @@ fn read(path: &Path) -> io::Result<String> {
 
 /// Prints the files a browser would list, one per line, like `ls`.
 fn list_files(root: &Path, all: bool) -> io::Result<()> {
-    let mut entries: Vec<files::Entry> = files::scan(root, all).into_iter().flatten().collect();
+    let mut entries: Vec<files::Entry> = files::scan(root, all, false)
+        .into_iter()
+        .flatten()
+        .collect();
     entries.sort_by(files::by_path);
     let mut out = io::stdout().lock();
     for e in entries {

@@ -1,5 +1,6 @@
 //! The interactive browser and reader.
 
+mod found;
 mod links;
 mod mouse;
 mod nav;
@@ -131,10 +132,17 @@ enum Shown {
         /// listed, or in the tree, at its name.
         from: usize,
         depth: usize,
+        /// Lines with the filter in them, for a file found by its text
+        /// rather than its name; else 0.
+        found: usize,
     },
     Dir(tree::Dir),
     /// `..`, inside a folder: up to this one.
     Up(String),
+    /// A line between the folders (and the files beside them) and the files
+    /// in the folders, listed flat; or before the files found by their text,
+    /// labelled. It can't be selected.
+    Rule(&'static str),
 }
 
 struct App {
@@ -160,6 +168,8 @@ struct App {
     site_root: Option<PathBuf>,
     /// List hidden and ignored files too.
     all: bool,
+    /// List hidden files (`.` toggles it).
+    hidden: bool,
     /// Files live reload added while the scan was still running.
     live_added: HashSet<PathBuf>,
     /// Watches the root and open documents for changes.
@@ -232,6 +242,8 @@ struct App {
     mouse_on: bool,
     /// A search of every file under way, and its query.
     grep: Option<(Receiver<Vec<crate::grep::Hit>>, String)>,
+    /// Filtering, the search of the files' text.
+    text_search: found::TextSearch,
     docs: HashMap<PathBuf, Doc>,
 }
 
@@ -252,6 +264,7 @@ impl App {
             root: None,
             site_root: None,
             all: false,
+            hidden: false,
             live_added: HashSet::new(),
             watch: None,
             index: None,
@@ -292,6 +305,7 @@ impl App {
             edit: None,
             grep: None,
             mouse_on: false,
+            text_search: Default::default(),
             docs: HashMap::new(),
         };
         match source {
@@ -305,7 +319,7 @@ impl App {
             }
             Source::Browse { root, open, all } => {
                 app.root_label = display_path(&root);
-                app.scan = Some(files::scan(&root, all));
+                app.scan = Some(files::scan(&root, all, false));
                 app.watch = Watch::new();
                 if let Some(watch) = &mut app.watch {
                     watch.add(&root);
@@ -330,7 +344,8 @@ impl App {
             terminal.draw(|f| self.draw(f))?;
             // While scanning or indexing, wake up now and then to show
             // what's new.
-            let wait = if self.scan.is_some() || self.indexing.is_some() || self.grep.is_some() {
+            let busy = self.scan.is_some() || self.indexing.is_some() || self.grep.is_some();
+            let wait = if busy || self.text_search.busy() {
                 Duration::from_millis(50)
             } else if self.watch.is_some() {
                 Duration::from_millis(250)
@@ -373,6 +388,7 @@ impl App {
         self.reload();
         self.restyle();
         self.receive_grep();
+        self.receive_found();
         if let Some(rx) = &self.indexing
             && let Ok(index) = rx.try_recv()
         {
@@ -395,6 +411,10 @@ impl App {
                     self.scan = None;
                     self.live_added.clear();
                     changed = true;
+                    // Search the text of the files the scan found since.
+                    if !self.filter.is_empty() {
+                        self.filter_changed();
+                    }
                     if let Some(root) = &self.root {
                         self.indexing = Some(index::build(root, self.files.clone()));
                     }
@@ -416,7 +436,7 @@ impl App {
     fn selected(&self) -> Option<&Entry> {
         match self.shown.get(self.list.selected()?)? {
             Shown::File { file, .. } => Some(&self.files[*file]),
-            Shown::Dir(_) | Shown::Up(_) => None,
+            Shown::Dir(_) | Shown::Up(_) | Shown::Rule(_) => None,
         }
     }
 
@@ -483,7 +503,11 @@ impl App {
                 &mut self.matcher,
             );
             dir_best = dirs.first().map(|(score, _)| (*score, shown.len()));
+            let any_dirs = !dirs.is_empty();
             shown.extend(dirs.into_iter().map(|(_, d)| Shown::Dir(d)));
+            if any_dirs && !matched.is_empty() {
+                shown.push(Shown::Rule(""));
+            }
             matched.sort_by_key(|m| std::cmp::Reverse(m.2));
         }
         let file_best = matched.first().map(|m| (m.2, shown.len()));
@@ -492,7 +516,15 @@ impl App {
             hits,
             from: scope.len(),
             depth: 0,
+            found: 0,
         }));
+        // Past the rule, the first file found by its text.
+        let text_best = (!self.filter.is_empty()).then(|| shown.len() + 1);
+        let found = self.found_rows(&order, &self.listed);
+        let text_best = text_best.filter(|_| !found.is_empty());
+        if !self.filter.is_empty() {
+            shown.extend(found);
+        }
         self.shown = shown;
 
         let index = keep.and_then(|k| self.row_of(&k));
@@ -506,6 +538,7 @@ impl App {
             (Some((d, at)), Some((f, _))) if d > f => Some(at),
             (Some((_, at)), None) => Some(at),
             (_, Some((_, at))) if !self.filter.is_empty() => Some(at),
+            (None, None) => text_best,
             _ => None,
         };
         // Otherwise the README here, where there is one, or the first row
@@ -598,7 +631,8 @@ impl App {
             let listed = self.files.iter().position(|e| e.path == path);
             // A new file only joins if the scan would have listed it: not in
             // node_modules or anything else .gitignore'd, nor hidden.
-            if listed.is_none() && !(exists && files::listable(&root, &path, self.all)) {
+            if listed.is_none() && !(exists && files::listable(&root, &path, self.all, self.hidden))
+            {
                 continue;
             }
             if let Some(index) = &mut self.index {
@@ -649,12 +683,26 @@ impl App {
             return;
         }
         self.moved = true;
-        let i = self
+        let mut i = self
             .list
             .selected()
             .unwrap_or(0)
-            .saturating_add_signed(delta);
-        self.list.select(Some(i.min(self.shown.len() - 1)));
+            .saturating_add_signed(delta)
+            .min(self.shown.len() - 1);
+        // Past a rule, the way we're going, or back if it's at the end.
+        if matches!(self.shown[i], Shown::Rule(_)) {
+            let on = if delta < 0 {
+                i.checked_sub(1)
+            } else {
+                Some(i + 1)
+            };
+            let back = if delta < 0 { i + 1 } else { i.wrapping_sub(1) };
+            match on.or(Some(back)).filter(|&j| j < self.shown.len()) {
+                Some(j) => i = j,
+                None => return,
+            }
+        }
+        self.list.select(Some(i));
     }
 
     fn start_edit(&mut self) {
@@ -688,6 +736,37 @@ impl App {
             Ok(how) => format!("Copied {what} {how}"),
             Err(e) => format!("Couldn't copy: {e}"),
         });
+    }
+
+    /// `.`: shows or hides hidden files, scanning again, and keeping the
+    /// selection where it can.
+    fn toggle_hidden(&mut self) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        if self.all {
+            self.flash = Some("Hidden files are listed already (--all)".into());
+            return;
+        }
+        self.hidden = !self.hidden;
+        self.want = self.selected().map(|e| e.path.clone());
+        if !self.hidden && self.scope.split('/').any(|c| c.starts_with('.')) {
+            self.scope.clear();
+        }
+        self.files.clear();
+        self.live_added.clear();
+        self.scan = Some(files::scan(&root, false, self.hidden));
+        self.filter_changed();
+        self.moved = false;
+        self.refresh();
+        self.flash = Some(
+            if self.hidden {
+                "Showing hidden files"
+            } else {
+                "Hiding hidden files"
+            }
+            .into(),
+        );
     }
 
     fn copy_path(&mut self) {
@@ -794,6 +873,7 @@ impl App {
             KeyCode::Esc => {
                 self.typing = false;
                 self.filter.clear();
+                self.filter_changed();
                 // The match stays selected.
                 self.moved = true;
                 return self.refresh();
@@ -806,6 +886,7 @@ impl App {
             KeyCode::Char(c) if !ctrl => self.filter.push(c),
             _ => return,
         }
+        self.filter_changed();
         // Jump to the best match.
         self.moved = false;
         self.refresh();
@@ -848,10 +929,12 @@ impl App {
             }
             KeyCode::Char(' ') if self.selected_dir().is_some() => self.toggle_dir(),
             KeyCode::Char('/') => self.typing = true,
+            KeyCode::Char('.') => self.toggle_hidden(),
             KeyCode::Esc if !self.filter.is_empty() => {
                 // The match stays selected.
                 self.moved = true;
                 self.filter.clear();
+                self.filter_changed();
                 self.refresh();
             }
             KeyCode::Esc if self.leave_dir() => {}
@@ -931,6 +1014,7 @@ impl App {
     }
 
     fn draw(&mut self, f: &mut Frame) {
+        self.preview_found();
         let [header, body, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(0),
@@ -1047,7 +1131,19 @@ impl App {
         let count = if self.filter.is_empty() {
             format!(" {name} ({}) ", self.in_scope)
         } else {
-            format!(" {name} ({} of {}) ", self.listed.len(), self.in_scope)
+            let in_text = self
+                .shown
+                .iter()
+                .filter(|s| matches!(s, Shown::File { found: 1.., .. }))
+                .count();
+            let mut n = self.listed.len().to_string();
+            if in_text > 0 {
+                n.push_str(&format!(" + {in_text}"));
+            }
+            if self.text_search.busy() {
+                n.push_str(" …");
+            }
+            format!(" {name} ({n} of {}) ", self.in_scope)
         };
         // The filter shows on the list it narrows, not down in the footer.
         let mut title = vec![Span::raw(count)];
@@ -1079,6 +1175,8 @@ impl App {
         if self.shown.is_empty() && self.scan.is_none() {
             let msg = if self.files.is_empty() {
                 "No Markdown files here"
+            } else if self.text_search.busy() {
+                "Searching the text…"
             } else {
                 "Nothing matches"
             };
@@ -1101,15 +1199,22 @@ impl App {
                 hits,
                 from,
                 depth,
+                found,
             } => {
                 let e = &self.files[*file];
                 // Files leave the folders' count column empty.
                 let width = width.saturating_sub(tree::count_column(count_w));
-                let age = files::ago(e.modified, now);
+                // Found by its text: how many lines have it, not its age.
+                let age = match found {
+                    0 => files::ago(e.modified, now),
+                    1 => "1 line".into(),
+                    n => format!("{n} lines"),
+                };
                 list_line(tree::indent(*depth), &e.rel[*from..], hits, &age, width)
             }
             Shown::Dir(d) => tree::dir_line(d, &files::ago(d.newest, now), width, count_w),
             Shown::Up(to) => tree::up_line(to),
+            Shown::Rule(label) => rule_line(label, width),
         }
     }
 
@@ -1121,7 +1226,7 @@ impl App {
         match self.shown.get(self.list.selected()?)? {
             Shown::Dir(d) => Some(d.rel.clone()),
             Shown::Up(to) => Some(to.clone()),
-            Shown::File { .. } => None,
+            Shown::File { .. } | Shown::Rule(_) => None,
         }
     }
 
@@ -1146,8 +1251,12 @@ impl App {
             rows.len()
         };
         lines.extend(rows[..fits].iter().map(|r| self.row_line(r, width, now)));
-        if fits < rows.len() {
-            lines.push(Line::from(format!(" … and {} more", rows.len() - fits)).dim());
+        let more = rows[fits..]
+            .iter()
+            .filter(|r| !matches!(r, Shown::Rule(_)))
+            .count();
+        if more > 0 {
+            lines.push(Line::from(format!(" … and {more} more")).dim());
         }
         lines
     }
@@ -1437,6 +1546,17 @@ fn fit_path(chars: &[char], room: usize) -> Vec<Piece> {
 /// One row of the file list: the path, with its directory dimmed and filter
 /// matches highlighted, and the age right-aligned. Long paths lose the
 /// folders in between, then the end of the file name: see [`fit_path`].
+/// A rule across the list, with `label` in it if there is one.
+fn rule_line(label: &str, width: usize) -> Line<'static> {
+    let line = if label.is_empty() {
+        format!(" {}", "─".repeat(width.saturating_sub(2)))
+    } else {
+        let rest = width.saturating_sub(6 + wrap::width(label));
+        format!(" ── {label} {}", "─".repeat(rest))
+    };
+    Line::from(line).dim()
+}
+
 fn list_line(indent: usize, rel: &str, hits: &[u32], age: &str, width: usize) -> Line<'static> {
     let chars: Vec<char> = rel.chars().collect();
     let dir_len = rel.rfind('/').map_or(0, |i| rel[..=i].chars().count());
@@ -1511,10 +1631,11 @@ fn draw_help(f: &mut Frame) {
         ("^n ^p", "Emacs: down / up"),
         ("^v M-v", "Emacs: page down / up"),
         ("M-< M->", "Emacs: top / bottom (^g: esc)"),
-        ("/", "Filter files (fuzzy)"),
+        ("/", "Filter files by name (fuzzy), then text"),
         ("→ ←", "In the list: into a folder / up a folder"),
         ("space", "Look inside a folder, or close it (in the list)"),
         ("m", "Sort by name or by date"),
+        (".", "Show or hide hidden files"),
         ("\\", "Show or hide the list while reading"),
         ("tab", "Show the source beside the rendered text"),
         ("^w ⇧tab", "Switch between source and rendered"),
@@ -1709,6 +1830,7 @@ mod tests {
             Shown::Dir(d) => d.rel.clone(),
             Shown::File { file, .. } => app.files[*file].rel.clone(),
             Shown::Up(to) => format!("..{to}"),
+            Shown::Rule(_) => "─".into(),
         };
         let rows = |app: &App| -> Vec<String> {
             (0..app.shown.len())
@@ -1716,21 +1838,28 @@ mod tests {
                     Shown::Dir(d) => d.label.clone(),
                     Shown::File { file, from, .. } => app.files[*file].rel[*from..].into(),
                     Shown::Up(_) => "..".into(),
+                    Shown::Rule(_) => "─".into(),
                 })
                 .collect()
         };
-        // The folders and the files at the top, then every file in the
-        // folders; starting on the first file.
+        // The folders and the files at the top, a rule, then every file in
+        // the folders; starting on the first file.
         assert_eq!(
             rows(&app),
             [
                 "docs/",
                 "README.md",
+                "─",
                 "docs/a.md",
                 "docs/api/v2/deep/b.md",
                 "docs/api/v2/deep/c.md"
             ]
         );
+        assert_eq!(row(&app), "README.md");
+        // Moving steps over the rule, both ways.
+        app.select_by(1);
+        assert_eq!(row(&app), "docs/a.md");
+        app.select_by(-1);
         assert_eq!(row(&app), "README.md");
         app.list.select(Some(0));
 
@@ -1743,6 +1872,7 @@ mod tests {
                 "..",
                 "api/v2/deep/",
                 "a.md",
+                "─",
                 "api/v2/deep/b.md",
                 "api/v2/deep/c.md"
             ],
@@ -1751,7 +1881,7 @@ mod tests {
         assert_eq!(row(&app), "docs/api/v2/deep/", "no README: the first row");
         // Looking inside without going in.
         app.toggle_dir();
-        assert_eq!(app.shown.len(), 7);
+        assert_eq!(app.shown.len(), 8);
         app.toggle_dir();
         app.enter_dir();
         assert!(
@@ -1801,6 +1931,89 @@ mod tests {
         app.start_edit();
         assert_eq!(app.flash.as_deref(), Some("Choose a file to edit"));
         assert!(app.edit.is_none());
+
+        // `.` scans again with hidden files, keeping the selection.
+        app.list.select(Some(
+            app.row_of(&tree::Pick::File(dir.join("docs/a.md")))
+                .unwrap(),
+        ));
+        app.toggle_hidden();
+        while app.scan.is_some() {
+            app.receive();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.files.iter().any(|e| e.rel == ".hidden/x.md"));
+        assert_eq!(app.selected().unwrap().rel, "docs/a.md");
+        app.toggle_hidden();
+        while app.scan.is_some() {
+            app.receive();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.files.iter().any(|e| e.rel == ".hidden/x.md"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn filtering_finds_files_by_their_text_too() {
+        let dir = std::env::temp_dir().join(format!("lsmd-found-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        for (f, text) in [
+            ("install.md", "# Install\n"),
+            ("docs/a.md", "# A\n\nTo install, run it.\n"),
+            ("docs/b.md", "# B\n\ninstall\n\nInstall again\n"),
+            ("docs/c.md", "# C\n"),
+        ] {
+            std::fs::write(dir.join(f), text).unwrap();
+        }
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let mut app = scanned(&dir, None);
+        app.list_key(KeyEvent::from(KeyCode::Char('/')), false);
+        for c in "install".chars() {
+            app.key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        while app.text_search.busy() {
+            app.receive();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let rows: Vec<String> = app
+            .shown
+            .iter()
+            .map(|s| match s {
+                Shown::File { file, found, .. } => format!("{} {found}", app.files[*file].rel),
+                Shown::Rule(label) => format!("─ {label}"),
+                _ => "?".into(),
+            })
+            .collect();
+        // By name first; then by text, most lines first.
+        assert_eq!(
+            rows,
+            [
+                "install.md 0",
+                "─ in the text",
+                "docs/b.md 2",
+                "docs/a.md 1"
+            ]
+        );
+        assert_eq!(app.selected().unwrap().rel, "install.md");
+
+        // Moving onto one found by its text shows its first match.
+        app.select_by(1);
+        assert_eq!(app.selected().unwrap().rel, "docs/b.md");
+        app.preview_found();
+        assert_eq!(
+            app.text_search.previewed,
+            Some((dir.join("docs/b.md"), "install".into()))
+        );
+
+        // Typing more searches again; nothing found by name, the first
+        // found by its text is selected.
+        app.key(KeyEvent::from(KeyCode::Char(',')));
+        assert!(app.text_search.busy());
+        while app.text_search.busy() {
+            app.receive();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.selected().unwrap().rel, "docs/a.md");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
