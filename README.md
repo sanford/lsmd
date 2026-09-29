@@ -125,6 +125,7 @@ Anywhere:
 | Key | |
 |---|---|
 | `Tab` | Show or hide the source beside the rendered text |
+| `#` | Show or hide line numbers: the source line each paragraph, list item, table row and line of code starts on |
 | `Ctrl-W` `Shift-Tab` | Scroll the source side or the rendered side |
 | `<` `>` | Move the divider |
 | `e` | Edit the file in `$VISUAL` or `$EDITOR`, at the line you're reading |

@@ -223,6 +223,8 @@ struct App {
     help: bool,
     /// Show the source beside the rendered document.
     split: bool,
+    /// Number the rendered document's lines with their source lines.
+    numbers: bool,
     /// In the split view, the source side has the keyboard.
     source_focus: bool,
     /// The source side's share of the split, in percent.
@@ -295,6 +297,7 @@ impl App {
             outline_temporary: false,
             help: false,
             split: false,
+            numbers: false,
             source_focus: false,
             ratio: 50,
             source_right: true,
@@ -813,6 +816,7 @@ impl App {
                 });
             }
             KeyCode::Tab => self.split = !self.split,
+            KeyCode::Char('#') => self.numbers = !self.numbers,
             KeyCode::BackTab if self.split => self.source_focus = !self.source_focus,
             KeyCode::Char('w') if ctrl && self.split => self.source_focus = !self.source_focus,
             // Move the divider, whichever side the source is on.
@@ -1311,12 +1315,14 @@ impl App {
             focus: self.side(),
             source_right: self.source_right,
             max_width: self.max_width,
+            numbers: self.numbers,
         });
+        let numbers = self.numbers;
         if let Some(doc) = self.current() {
             if let Some(split) = split {
                 doc.draw_split(f, area, &split, &theme);
             } else {
-                doc.draw(f, area, width, &theme);
+                doc.draw(f, area, width, &theme, numbers);
             }
         }
         // After the document, so it shows the section it's scrolled to.
@@ -1638,6 +1644,7 @@ fn draw_help(f: &mut Frame) {
         (".", "Show or hide hidden files"),
         ("\\", "Show or hide the list while reading"),
         ("tab", "Show the source beside the rendered text"),
+        ("#", "Show or hide line numbers"),
         ("^w ⇧tab", "Switch between source and rendered"),
         ("< >", "Move the divider left / right"),
         ("Q", "Quit from anywhere"),

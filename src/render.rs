@@ -17,6 +17,10 @@ pub struct RLine {
     /// The 1-based source lines (first, last) of the top-level block this
     /// line was rendered from. `None` for blank lines between blocks.
     pub src: Option<(usize, usize)>,
+    /// The 1-based source line this line starts, when it's the first
+    /// rendered from it: a paragraph, heading, list item, table row or
+    /// line of code. `None` for the rest (wrapped lines, borders, gaps).
+    pub line: Option<usize>,
     /// The links on this line, by column. Their ids index [`Rendered::links`].
     pub links: Vec<LinkSpan>,
 }
@@ -93,6 +97,7 @@ pub fn render(
         prefix: Vec::new(),
         gap: false,
         src: None,
+        mark: None,
         list_depth: 0,
         depth: 0,
         footnotes: false,
@@ -133,6 +138,8 @@ struct Renderer<'t> {
     /// A blank line is due before the next line.
     gap: bool,
     src: Option<(usize, usize)>,
+    /// The source line for the next line emitted: see [`RLine::line`].
+    mark: Option<usize>,
     list_depth: usize,
     /// How many blocks the current one is nested in.
     depth: usize,
@@ -184,6 +191,7 @@ impl Renderer<'_> {
             self.out.push(RLine {
                 spans: blank,
                 src: None,
+                line: None,
                 links: Vec::new(),
             });
         }
@@ -211,6 +219,7 @@ impl Renderer<'_> {
         self.out.push(RLine {
             spans: line,
             src: self.src,
+            line: self.mark.take(),
             links: Vec::new(),
         });
     }
@@ -260,6 +269,8 @@ impl Renderer<'_> {
             return;
         }
         self.depth += 1;
+        // The first line it renders is numbered with its first line.
+        self.mark = Some(node.data().sourcepos.start.line);
         self.block_inner(node, tight);
         self.depth -= 1;
     }
@@ -267,7 +278,7 @@ impl Renderer<'_> {
     fn block_inner(&mut self, node: Node<'_>, tight: bool) {
         let ast = node.data();
         match &ast.value {
-            NodeValue::FrontMatter(text) => self.front_matter(text),
+            NodeValue::FrontMatter(text) => self.front_matter(text, ast.sourcepos.start.line),
             NodeValue::Paragraph => {
                 let pieces = self.inlines(node, Style::default());
                 self.para(&pieces);
@@ -286,7 +297,9 @@ impl Renderer<'_> {
             NodeValue::Alert(alert) => self.alert(node, alert.alert_type, alert.title.as_deref()),
             NodeValue::List(list) => self.list(node, list, tight),
             NodeValue::CodeBlock(code) => {
-                self.code_block(&code.info, &code.literal);
+                // Past the opening fence, if there is one.
+                let first = ast.sourcepos.start.line + usize::from(code.fenced);
+                self.code_block(&code.info, &code.literal, first);
                 self.gap();
             }
             NodeValue::HtmlBlock(html) => self.html_block(&html.literal),
@@ -411,10 +424,11 @@ impl Renderer<'_> {
         }
     }
 
-    fn code_block(&mut self, info: &str, literal: &str) {
+    /// A block of code whose first line is source line `first`.
+    fn code_block(&mut self, info: &str, literal: &str, first: usize) {
         self.flush_gap();
         let start = self.out.len();
-        self.code_block_lines(info, literal);
+        self.code_block_lines(info, literal, first);
         self.code_blocks.push(CodeBlock {
             lines: start..self.out.len(),
             lang: highlight::language(info).to_string(),
@@ -422,7 +436,7 @@ impl Renderer<'_> {
         });
     }
 
-    fn code_block_lines(&mut self, info: &str, literal: &str) {
+    fn code_block_lines(&mut self, info: &str, literal: &str, first_line: usize) {
         let lang = highlight::language(info);
         let theme = self.theme;
         let base = theme.code_block();
@@ -433,7 +447,8 @@ impl Renderer<'_> {
         if !theme.color {
             // No background to set the code apart, so indent it instead.
             let avail = self.avail().saturating_sub(4);
-            for line in lines {
+            for (n, line) in lines.into_iter().enumerate() {
+                self.mark = Some(first_line + n);
                 for (i, chunk) in wrap::hard_wrap(line, avail).into_iter().enumerate() {
                     let mut spans = vec![Span::raw(if i == 0 {
                         "    ".into()
@@ -452,7 +467,8 @@ impl Renderer<'_> {
         // language in the top right corner.
         let inner = self.avail().saturating_sub(2).max(1);
         let mut first = true;
-        for line in lines {
+        for (n, line) in lines.into_iter().enumerate() {
+            self.mark = Some(first_line + n);
             for (i, chunk) in wrap::hard_wrap(line, inner).into_iter().enumerate() {
                 let mut pad = inner.saturating_sub(wrap::spans_width(&chunk)) + 1;
                 let mut spans = vec![if i == 0 {
@@ -483,12 +499,13 @@ impl Renderer<'_> {
     }
 
     /// YAML front matter as dimmed `key: value` lines.
-    fn front_matter(&mut self, text: &str) {
-        for line in text.lines() {
+    fn front_matter(&mut self, text: &str, first: usize) {
+        for (n, line) in text.lines().enumerate() {
             let line = expand_tabs(line.trim_end());
             if line.is_empty() || line == "---" {
                 continue;
             }
+            self.mark = Some(first + n);
             let pieces = match line.split_once(':') {
                 Some((key, value)) if !key.starts_with([' ', '-', '#']) => vec![
                     Piece::Text(format!("{key}:"), self.theme.key()),
@@ -570,9 +587,16 @@ impl Renderer<'_> {
             }
             vec![Span::styled(s, border)]
         };
+        let row_lines: Vec<usize> = node
+            .children()
+            .map(|row| row.data().sourcepos.start.line)
+            .collect();
+        // The border isn't the header's line.
+        self.mark = None;
         self.emit(rule("┌", "┬", "┐"));
         let nrows = rows.len();
         for (r, (header, cells)) in rows.iter().enumerate() {
+            self.mark = row_lines.get(r).copied();
             let mut wrapped: Vec<_> = cells
                 .iter()
                 .zip(&widths)
@@ -891,6 +915,40 @@ mod tests {
                 Some((3, 4)),
                 None,
                 Some((6, 6))
+            ]
+        );
+    }
+
+    #[test]
+    fn numbers_lines_with_where_they_start_in_the_source() {
+        let md = "---\ntitle: x\n---\n\n# Title\n\n- one\n- two\n  wrapped\n\n```\nfn a() {}\nfn b() {}\n```\n\n| a |\n|---|\n| 1 |\n";
+        let numbered: Vec<String> = render(md, 80, &Theme::plain(), None, None)
+            .lines
+            .iter()
+            .map(|l| match l.line {
+                Some(n) => format!("{n:>2} {}", l.text().trim_end()),
+                None => format!("   {}", l.text().trim_end()),
+            })
+            .collect();
+        assert_eq!(
+            numbered.iter().map(|l| l.trim_end()).collect::<Vec<_>>(),
+            [
+                " 2 title: x",
+                "",
+                " 5 Title",
+                "   ═════",
+                "",
+                " 7 • one",
+                " 8 • two wrapped",
+                "",
+                "12     fn a() {}",
+                "13     fn b() {}",
+                "",
+                "   ┌───┐",
+                "16 │ a │",
+                "   ├───┤",
+                "18 │ 1 │",
+                "   └───┘",
             ]
         );
     }

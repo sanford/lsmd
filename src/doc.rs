@@ -34,6 +34,8 @@ pub struct Split {
     pub source_right: bool,
     /// The widest to wrap the rendered side.
     pub max_width: Option<usize>,
+    /// Number the rendered side's lines too.
+    pub numbers: bool,
 }
 
 /// Which side of the split the source goes on.
@@ -340,14 +342,53 @@ impl Doc {
     }
 
     /// Draws the rendered view into `area`, wrapped to `width` (which may be
-    /// less than the area's).
-    pub fn draw(&mut self, f: &mut Frame, area: Rect, width: usize, theme: &Theme) {
+    /// less than the area's), with source line numbers down the left if
+    /// `numbers`.
+    pub fn draw(&mut self, f: &mut Frame, area: Rect, width: usize, theme: &Theme, numbers: bool) {
+        let (numbers_area, area) = self.gutter(area, numbers);
+        let width = width.min(area.width.into());
         self.layout(width.max(1), theme);
         self.height = area.height.into();
         self.sync(false);
         self.lead = Side::Rendered;
         self.source_area = Rect::default();
         self.draw_rendered(f, area);
+        self.draw_numbers(f, numbers_area, theme);
+    }
+
+    /// Splits the room for line numbers off the left of `area`, if
+    /// `numbers`: as wide as the last line's number, and a space.
+    fn gutter(&self, area: Rect, numbers: bool) -> (Rect, Rect) {
+        let w = if numbers {
+            (digits(self.md.lines().count()) as u16 + 1).min(area.width / 2)
+        } else {
+            0
+        };
+        let gutter = Rect { width: w, ..area };
+        let rest = Rect {
+            x: area.x + w,
+            width: area.width - w,
+            ..area
+        };
+        (gutter, rest)
+    }
+
+    /// The source line numbers of the rendered lines on screen, each on the
+    /// first line rendered from its source line.
+    fn draw_numbers(&self, f: &mut Frame, area: Rect, theme: &Theme) {
+        if area.width == 0 {
+            return;
+        }
+        let w = usize::from(area.width) - 1;
+        let visible: Vec<Line> = self.lines[self.top.min(self.lines.len())..]
+            .iter()
+            .take(self.height)
+            .map(|l| match l.line {
+                Some(n) => Line::from(Span::styled(format!("{n:>w$}"), theme.dim())),
+                None => Line::default(),
+            })
+            .collect();
+        f.render_widget(Paragraph::new(visible), area);
     }
 
     /// Draws source and rendered side by side.
@@ -376,6 +417,7 @@ impl Doc {
             width: rest.saturating_sub(3),
             ..area
         };
+        let (numbers_area, rendered_area) = self.gutter(rendered_area, split.numbers);
 
         let mut width = usize::from(rendered_area.width).max(1);
         if let Some(max) = split.max_width {
@@ -391,6 +433,7 @@ impl Doc {
         let bar = vec![Line::from("│".dim()); area.height.into()];
         f.render_widget(Paragraph::new(bar), bar_area);
         self.draw_rendered(f, rendered_area);
+        self.draw_numbers(f, numbers_area, theme);
     }
 
     fn draw_rendered(&mut self, f: &mut Frame, area: Rect) {
