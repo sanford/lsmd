@@ -5,7 +5,7 @@
 //! opens a folder in place, to look inside without going in.
 
 use super::{App, Shown};
-use crate::files::{self, Entry};
+use crate::files::Entry;
 use crate::wrap;
 use nucleo_matcher::pattern::Pattern;
 use nucleo_matcher::{Matcher, Utf32Str};
@@ -87,6 +87,28 @@ pub fn rows(
         by_time,
     };
     tree.flatten(&root, scope, 0, &mut out);
+    out
+}
+
+/// The list for `scope`, unfiltered: its folders and the files directly
+/// in it, then every file in its folders, with its path from `scope`.
+pub fn listing(
+    files: &[Entry],
+    listed: &[usize],
+    scope: &str,
+    open: &HashSet<String>,
+    by_time: bool,
+) -> Vec<Shown> {
+    let mut out = rows(files, listed, scope, false, open, by_time);
+    let nested = listed
+        .iter()
+        .filter(|&&i| files[i].rel[scope.len()..].contains('/'));
+    out.extend(nested.map(|&file| Shown::File {
+        file,
+        hits: Vec::new(),
+        from: scope.len(),
+        depth: 0,
+    }));
     out
 }
 
@@ -382,29 +404,6 @@ impl App {
             self.list.select(Some(i));
         }
         true
-    }
-
-    /// The preview beside a folder: what's in it, and how to get there.
-    pub(super) fn dir_summary(&self, d: &Dir) -> Vec<Line<'static>> {
-        let n = d.files;
-        let what = format!("{n} Markdown file{}", if n == 1 { "" } else { "s" });
-        let mut lines = vec![Line::from(d.rel.clone()).bold(), Line::from(what)];
-        if let Some(age) = Some(files::ago(d.newest, SystemTime::now())).filter(|a| !a.is_empty()) {
-            lines.push(Line::from(format!("the newest changed {age}")).dim());
-        }
-        lines.push(Line::default());
-        let key = |k: &'static str, what: &'static str| {
-            Line::from(vec![Span::raw(k).bold(), Span::raw(what).dim()])
-        };
-        lines.push(key("→ ⏎    ", "go into it"));
-        if self.filter.is_empty() {
-            let peek = if d.open { "close it" } else { "look inside" };
-            lines.push(key("space  ", peek));
-        }
-        if !self.scope.is_empty() {
-            lines.push(key("←      ", "up a folder"));
-        }
-        lines
     }
 }
 

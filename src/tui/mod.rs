@@ -419,16 +419,8 @@ impl App {
         let chosen = self.moved.then(|| self.picked()).flatten();
         let keep = self.want.clone().map(tree::Pick::File).or(chosen);
         let scope = self.scope().to_string();
-        let mut order: Vec<usize> = (0..self.files.len())
-            .filter(|&i| self.files[i].rel.starts_with(&scope))
-            .collect();
+        let order = self.sorted_in(&scope);
         self.in_scope = order.len();
-        let cmp = if self.by_time {
-            files::by_modified
-        } else {
-            files::by_path
-        };
-        order.sort_by(|&a, &b| cmp(&self.files[a], &self.files[b]));
 
         // In the list's order, with each match's score.
         let mut matched: Vec<(usize, Vec<u32>, u32)> = Vec::new();
@@ -458,15 +450,14 @@ impl App {
         }
         let mut dir_best = None;
         if self.filter.is_empty() {
-            shown.extend(tree::rows(
+            shown.extend(tree::listing(
                 &self.files,
                 &self.listed,
                 &scope,
-                false,
                 &self.open,
                 self.by_time,
             ));
-            matched.retain(|m| self.files[m.0].rel[scope.len()..].contains('/'));
+            matched.clear();
         } else {
             let pattern = Pattern::parse(&self.filter, CaseMatching::Smart, Normalization::Smart);
             let dirs = tree::matching_dirs(
@@ -503,12 +494,16 @@ impl App {
             (_, Some((_, at))) if !self.filter.is_empty() => Some(at),
             _ => None,
         };
-        // Otherwise the first file, as in a list without folders, or the
-        // first row past `..`.
-        let top = self
-            .shown
-            .iter()
-            .position(|s| matches!(s, Shown::File { .. }))
+        // Otherwise the README here, where there is one, or the first row
+        // past `..`.
+        let readme = self.shown.iter().position(|s| match s {
+            Shown::File { file, from, .. } => {
+                let shown = &self.files[*file].rel[*from..];
+                !shown.contains('/') && shown.to_lowercase().starts_with("readme.")
+            }
+            _ => false,
+        });
+        let top = readme
             .or_else(|| self.shown.iter().position(|s| !matches!(s, Shown::Up(_))))
             .or((!self.shown.is_empty()).then_some(0));
         self.list.select(index.or(best).or(top));
@@ -518,6 +513,20 @@ impl App {
         let last_top = self.shown.len().saturating_sub(self.list_height);
         let offset = if self.moved { self.list.offset() } else { 0 };
         *self.list.offset_mut() = offset.min(last_top);
+    }
+
+    /// The files in `scope`, in the list's order.
+    fn sorted_in(&self, scope: &str) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..self.files.len())
+            .filter(|&i| self.files[i].rel.starts_with(scope))
+            .collect();
+        let cmp = if self.by_time {
+            files::by_modified
+        } else {
+            files::by_path
+        };
+        order.sort_by(|&a, &b| cmp(&self.files[a], &self.files[b]));
+        order
     }
 
     /// The document for `path`, loading it the first time. (Changes to
@@ -1028,34 +1037,10 @@ impl App {
         self.list_area = inner;
         let now = SystemTime::now();
         let width = usize::from(inner.width);
-        let count_w = self.count_width();
-        // Files leave the folders' count column empty.
-        let file_w = width.saturating_sub(tree::count_column(count_w));
         let items: Vec<ListItem> = self
             .shown
             .iter()
-            .map(|s| match s {
-                Shown::File {
-                    file,
-                    hits,
-                    from,
-                    depth,
-                } => {
-                    let e = &self.files[*file];
-                    ListItem::new(list_line(
-                        tree::indent(*depth),
-                        &e.rel[*from..],
-                        hits,
-                        &files::ago(e.modified, now),
-                        file_w,
-                    ))
-                }
-                Shown::Dir(d) => {
-                    let age = files::ago(d.newest, now);
-                    ListItem::new(tree::dir_line(d, &age, width, count_w))
-                }
-                Shown::Up(to) => ListItem::new(tree::up_line(to)),
-            })
+            .map(|s| ListItem::new(self.row_line(s, width, now)))
             .collect();
         let list = List::new(items)
             .block(block)
@@ -1082,36 +1067,86 @@ impl App {
         }
     }
 
+    /// A row of the file list, `width` columns wide.
+    fn row_line(&self, row: &Shown, width: usize, now: SystemTime) -> Line<'static> {
+        let count_w = self.count_width();
+        match row {
+            Shown::File {
+                file,
+                hits,
+                from,
+                depth,
+            } => {
+                let e = &self.files[*file];
+                // Files leave the folders' count column empty.
+                let width = width.saturating_sub(tree::count_column(count_w));
+                let age = files::ago(e.modified, now);
+                list_line(tree::indent(*depth), &e.rel[*from..], hits, &age, width)
+            }
+            Shown::Dir(d) => tree::dir_line(d, &files::ago(d.newest, now), width, count_w),
+            Shown::Up(to) => tree::up_line(to),
+        }
+    }
+
+    /// The folder selected in the list (or the one `..` goes up to).
+    fn selected_folder(&self) -> Option<String> {
+        if self.focus != Focus::List {
+            return None;
+        }
+        match self.shown.get(self.list.selected()?)? {
+            Shown::Dir(d) => Some(d.rel.clone()),
+            Shown::Up(to) => Some(to.clone()),
+            Shown::File { .. } => None,
+        }
+    }
+
+    /// What's in `scope`, as going into it lists it, `height` rows of it.
+    fn folder_preview(&self, scope: &str, width: usize, height: usize) -> Vec<Line<'static>> {
+        let order = self.sorted_in(scope);
+        let now = SystemTime::now();
+        let newest = order.iter().filter_map(|&i| self.files[i].modified).max();
+        let n = order.len();
+        let mut summary = format!("{n} Markdown file{}", if n == 1 { "" } else { "s" });
+        let age = files::ago(newest, now);
+        if !age.is_empty() {
+            summary.push_str(&format!(", the newest changed {age}"));
+        }
+        let mut lines = vec![Line::from(summary).dim(), Line::default()];
+        let rows = tree::listing(&self.files, &order, scope, &HashSet::new(), self.by_time);
+        let room = height.saturating_sub(lines.len());
+        // Room for a last line saying how many more there are.
+        let fits = if rows.len() > room {
+            room.saturating_sub(1)
+        } else {
+            rows.len()
+        };
+        lines.extend(rows[..fits].iter().map(|r| self.row_line(r, width, now)));
+        if fits < rows.len() {
+            lines.push(Line::from(format!(" … and {} more", rows.len() - fits)).dim());
+        }
+        lines
+    }
+
     fn draw_preview(&mut self, f: &mut Frame, area: Rect) {
+        let folder = self.selected_folder();
         let path = match self.focus {
             Focus::Reader => self.reading.clone(),
             Focus::List => self.selected().map(|e| e.path.clone()),
         };
-        let title = path
-            .as_deref()
-            .map(|p| format!(" {} ", self.rel_label(p)))
-            .unwrap_or_default();
+        let title = match (&folder, path.as_deref()) {
+            (Some(dir), _) if dir.is_empty() => format!(" {} ", self.root_label),
+            (Some(dir), _) => format!(" {dir} "),
+            (None, Some(p)) => format!(" {} ", self.rel_label(p)),
+            (None, None) => String::new(),
+        };
         let block = self
             .pane(title, self.focus == Focus::Reader)
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         f.render_widget(block, area);
-        if self.focus == Focus::List
-            && let Some(d) = self.selected_dir()
-        {
-            let lines = self.dir_summary(d);
-            f.render_widget(Paragraph::new(lines), inner);
-            return;
-        }
-        if self.focus == Focus::List
-            && let Some(Shown::Up(to)) = self.list.selected().and_then(|i| self.shown.get(i))
-        {
-            let to = if to.is_empty() { "the top" } else { to };
-            let lines = vec![
-                Line::from(format!("Up to {to}")).bold(),
-                Line::default(),
-                Line::from(vec!["⏎ → ←  ".bold(), Span::raw("go up").dim()]),
-            ];
+        if let Some(dir) = folder {
+            let lines =
+                self.folder_preview(&dir, usize::from(inner.width), usize::from(inner.height));
             f.render_widget(Paragraph::new(lines), inner);
             return;
         }
@@ -1621,8 +1656,12 @@ mod tests {
         let app = scanned(&dir, Some(dir.join("sub/c.md")));
         assert_eq!(app.selected().unwrap().rel, "sub/c.md");
 
+        // Without a README, the first row: the folder.
         let app = scanned(&dir, None);
-        assert_eq!(app.selected().unwrap().rel, "a.md");
+        assert_eq!(app.selected_dir().unwrap().rel, "sub/");
+        std::fs::write(dir.join("README.md"), "# x\n").unwrap();
+        let app = scanned(&dir, None);
+        assert_eq!(app.selected().unwrap().rel, "README.md");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1683,8 +1722,7 @@ mod tests {
             ],
             "a chain of lone folders is one row"
         );
-        assert_eq!(row(&app), "docs/a.md");
-        app.select_by(-1);
+        assert_eq!(row(&app), "docs/api/v2/deep/", "no README: the first row");
         // Looking inside without going in.
         app.toggle_dir();
         assert_eq!(app.shown.len(), 7);

@@ -84,7 +84,7 @@ lsmd README.md | less -R   # not a terminal: print it rendered
 lsmd | wc -l         # not a terminal: list the files
 ```
 
-The list starts with the folders, each showing when its newest file changed and how many files are in it, and the files at the top level; every file in the folders follows, with its path. `→` goes into a folder, listing only what's in it, with `/` and `s` narrowed to it too, and `←` comes back up, to the folder you left; so does `..` at the top of the list. `Space` opens a folder in place, to look inside without going in. Filtering shows the best-matching folders above the matching files.
+The list starts with the folders, each showing when its newest file changed and how many files are in it, and the files at the top level; every file in the folders follows, with its path. A selected folder shows what's in it beside the list. `→` goes into a folder, listing only what's in it, with `/` and `s` narrowed to it too, and `←` comes back up, to the folder you left; so does `..` at the top of the list. `Space` opens a folder in place, to look inside without going in. Filtering shows the best-matching folders above the matching files.
 
 `.gitignore`d and hidden files are left out; `-a` includes them. `-w 100` caps the text width. `-p` prints without colors, as does setting `NO_COLOR`.
 
