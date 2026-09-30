@@ -310,7 +310,7 @@ struct App {
     /// Pictures made ready to draw, by diagram, columns and rows.
     drawn: HashMap<(u64, usize, usize), crate::figure::Drawn>,
     /// The document on screen and how far it's scrolled, and when that
-    /// last changed: pictures are drawn softly while it's moving.
+    /// last changed: iTerm2's pictures are drawn softly while it's moving.
     figure_at: Option<(Option<PathBuf>, usize)>,
     figure_moved: Option<Instant>,
     figure_moving: bool,
@@ -1478,10 +1478,11 @@ impl App {
             self.figure_moving = false;
             return;
         }
-        // Pictures are sent again whenever they move, which is a lot for a
-        // terminal to keep up with at a key's repeat rate: moving again
-        // soon after the last move, they're shown with less detail, or not
-        // at all, till things settle.
+        // iTerm2's pictures are sent again whenever they move, a lot for it
+        // to keep up with at a key's repeat rate: moving again soon after
+        // the last move, they're shown with less detail till things settle.
+        // Other terminals keep up (Kitty's are sent once, and only placed
+        // after), so theirs move as they are.
         let now = Instant::now();
         let settled = self.figure_moved.is_none_or(|t| now - t >= FIGURE_SETTLE);
         let at = Some((path, top));
@@ -1511,9 +1512,6 @@ impl App {
             let Some(drawn) = self.drawn.get(&key) else {
                 continue;
             };
-            if self.figure_moving && !drawn.has_soft() {
-                continue;
-            }
             drawn.draw(f.buffer_mut(), area, figure.x as u16, y, self.figure_moving);
         }
     }

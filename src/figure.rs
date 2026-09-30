@@ -142,11 +142,6 @@ impl Drawn {
             .map(Drawn::Sliced)
     }
 
-    /// Whether there's a lighter version to show while it moves.
-    pub fn has_soft(&self) -> bool {
-        matches!(self, Drawn::Rows { .. })
-    }
-
     /// Draws it `x` columns into `area` and `y` rows down, which is above
     /// the top once it's scrolled partly off; `soft` while it's moving.
     pub fn draw(&self, buf: &mut Buffer, area: Rect, x: u16, y: i32, soft: bool) {
