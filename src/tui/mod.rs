@@ -309,8 +309,11 @@ struct App {
     picker: Option<Picker>,
     /// Pictures made ready to draw, by diagram, columns and rows.
     drawn: HashMap<(u64, usize, usize), crate::figure::Drawn>,
+    /// Pictures to send the terminal, or free, after this frame.
+    to_send: Vec<String>,
     /// The document on screen and how far it's scrolled, and when that
-    /// last changed: iTerm2's pictures are drawn softly while it's moving.
+    /// last changed: an older iTerm2's pictures are drawn softly while it's
+    /// moving.
     figure_at: Option<(Option<PathBuf>, usize)>,
     figure_moved: Option<Instant>,
     figure_moving: bool,
@@ -386,6 +389,7 @@ impl App {
             text_search: Default::default(),
             picker: None,
             drawn: HashMap::new(),
+            to_send: Vec::new(),
             figure_at: None,
             figure_moved: None,
             figure_moving: false,
@@ -487,6 +491,12 @@ impl App {
             terminal.swap_buffers();
             terminal.draw(|f| self.draw(f))?;
         }
+        // Kitty's pictures, sent once whatever is drawn over them.
+        let mut out = io::stdout();
+        for send in self.to_send.drain(..) {
+            io::Write::write_all(&mut out, send.as_bytes())?;
+        }
+        io::Write::flush(&mut out)?;
         if sync {
             execute!(io::stdout(), EndSynchronizedUpdate)?;
         }
@@ -506,7 +516,7 @@ impl App {
         *terminal = ratatui::init();
         set_mouse(self.mouse_on, true);
         terminal.clear()?;
-        self.drawn.clear();
+        self.forget_drawn();
         Ok(result)
     }
 
@@ -1464,6 +1474,12 @@ impl App {
         }
     }
 
+    /// Lets go of every picture made ready, freeing Kitty's in the terminal.
+    fn forget_drawn(&mut self) {
+        let forgotten = self.drawn.drain().filter_map(|(_, drawn)| drawn.forget());
+        self.to_send.extend(forgotten);
+    }
+
     /// The document's pictures, over the room it left for them.
     fn draw_figures(&mut self, f: &mut Frame) {
         if self.picker.is_none() {
@@ -1478,11 +1494,11 @@ impl App {
             self.figure_moving = false;
             return;
         }
-        // iTerm2's pictures are sent again whenever they move, a lot for it
-        // to keep up with at a key's repeat rate: moving again soon after
-        // the last move, they're shown with less detail till things settle.
-        // Other terminals keep up (Kitty's are sent once, and only placed
-        // after), so theirs move as they are.
+        // An iTerm2 without Kitty's pictures has its own sent again whenever
+        // they move, a lot for it to keep up with at a key's repeat rate:
+        // moving again soon after the last move, they're shown with less
+        // detail till things settle. Other terminals keep up (Kitty's are
+        // sent once, and only placed after), so theirs move as they are.
         let now = Instant::now();
         let settled = self.figure_moved.is_none_or(|t| now - t >= FIGURE_SETTLE);
         let at = Some((path, top));
@@ -1493,20 +1509,21 @@ impl App {
         } else if settled {
             self.figure_moving = false;
         }
-        let Some(picker) = &self.picker else { return };
         if self.drawn.len() > MAX_DRAWN {
-            self.drawn.clear();
+            self.forget_drawn();
         }
+        let Some(picker) = &self.picker else { return };
         for (figure, y) in figures {
             let key = (figure.picture.key, figure.cols, figure.rows);
             if !self.drawn.contains_key(&key)
-                && let Some(drawn) = crate::figure::Drawn::new(
+                && let Some(mut drawn) = crate::figure::Drawn::new(
                     picker,
                     &figure.picture.image,
                     figure.cols,
                     figure.rows,
                 )
             {
+                self.to_send.extend(drawn.take_send());
                 self.drawn.insert(key, drawn);
             }
             let Some(drawn) = self.drawn.get(&key) else {
