@@ -138,7 +138,7 @@ Anywhere:
 | `Tab` | Between the file list and the document. From the list, reads the selected file, with the list kept beside it on a terminal 130 columns or wider; from the document, back to the list, which keeps showing what you were reading until you select another file, so `Tab` again returns to it |
 | `S` | Show or hide the source beside the rendered text |
 | `#` | Show or hide line numbers: the source line each paragraph, list item, table row and line of code starts on |
-| `Ctrl-W` | Scroll the source side or the rendered side |
+| `Ctrl-W` | Scroll the source side or the rendered side (or click the side) |
 | `<` `>` | Move the divider |
 | `e` | Edit the file in `$VISUAL` or `$EDITOR`, at the line you're reading |
 | `c` | Copy: then `c` a code block, `s` the section, `a` the whole document, `v` a selection, `l` a link to the section, `p` the path, `P` the full path (see [Copying](#copying)) |
@@ -149,7 +149,7 @@ Anywhere:
 
 Emacs keys work everywhere too: `Ctrl-N` `Ctrl-P` move down and up, `Ctrl-V` `Alt-V` a page, `Alt-<` `Alt->` to the ends, and `Ctrl-G` is `Esc`. In a document, `Ctrl-S` and `Ctrl-R` search forward and backward; while you type, they go to the next and previous match, and `Ctrl-S` on an empty search repeats the last one.
 
-The mouse works too: the wheel scrolls what's under it, the scrollbar and the outline jump where you click, clicking a file selects it and clicking again opens it, clicking a link follows it, and dragging over the text copies what it covers, as Markdown. `--no-mouse` leaves the mouse to the terminal, so you can select text without holding a modifier key.
+The mouse works too: the wheel scrolls what's under it, the scrollbar and the outline jump where you click, clicking a file selects it and clicking again opens it, clicking the document or either side of the split view gives it the keyboard, clicking a link follows it, and dragging over the text copies what it covers, as Markdown. `--no-mouse` leaves the mouse to the terminal, so you can select text without holding a modifier key.
 
 ### Links between documents
 

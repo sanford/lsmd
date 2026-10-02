@@ -75,6 +75,15 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) if over_list => self.click_list(y),
             MouseEventKind::Down(MouseButton::Left) => {
+                // A click on a side of the document gives it the keyboard.
+                if let Some(side) = self.current().and_then(|d| d.side_at(x, y)) {
+                    if self.split {
+                        self.source_focus = side == Side::Source;
+                    }
+                    if self.focus == Focus::List {
+                        self.switch_view();
+                    }
+                }
                 let url = self.current().and_then(|d| d.link_at(x, y));
                 if let Some(url) = url {
                     if self.focus == Focus::List {
