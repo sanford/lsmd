@@ -135,7 +135,7 @@ Anywhere:
 
 | Key | |
 |---|---|
-| `Tab` | Between the file list and the document. From the list, reads the selected file, with the list kept beside it on a terminal 130 columns or wider; from the document, back to the list, which keeps showing what you were reading until you select another file, so `Tab` again returns to it |
+| `Tab` | Between the file list and the document. From the list, reads the selected file, with the list kept beside it on a terminal 110 columns or wider; from the document, back to the list, which keeps showing what you were reading until you select another file, so `Tab` again returns to it |
 | `S` | Show or hide the source beside the rendered text |
 | `#` | Show or hide line numbers: the source line each paragraph, list item, table row and line of code starts on |
 | `Ctrl-W` | Scroll the source side or the rendered side (or click the side) |

@@ -37,7 +37,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
 /// A terminal this wide keeps the file list beside a document `Tab` opens.
-const WIDE: u16 = 130;
+const WIDE: u16 = 110;
 
 /// How long pictures wait after moving before they're drawn in full.
 const FIGURE_SETTLE: Duration = Duration::from_millis(150);
@@ -2259,7 +2259,7 @@ mod tests {
         std::fs::write(dir.join("b.md"), "# B\n").unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         let tab = KeyEvent::from(KeyCode::Tab);
-        for (width, beside) in [(160, true), (100, false)] {
+        for (width, beside) in [(110, true), (109, false)] {
             let mut app = scanned(&dir, None);
             app.body_width = width;
             app.list
