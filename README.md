@@ -120,12 +120,13 @@ Reading:
 
 | Key | |
 |---|---|
-| `↑` `↓` `j` `k` | Scroll two lines (`scroll` in the settings); with `Shift` (`⇧↑` `⇧↓` `K` `J`), a page |
+| `↑` `↓` `j` `k` | Scroll two lines (`scroll` in the settings), or where links come close together, go link to link (see [Links between documents](#links-between-documents)); with `Shift` (`⇧↑` `⇧↓` `K` `J`), a page |
 | `Space` `b`, `d` `u`, `g` `G` | Page, half page; top, bottom |
 | `/` `n` `N` | Search this document; next and previous match |
 | `]` `[` | Next and previous heading |
 | `o` | Outline: `↑` `↓` `j` `k` go through the headings with the text following as you move, `/` filters them, `Enter` reads from there, `Esc` goes back to where you were |
 | `O` | The same outline, kept open beside the document, highlighting the section you're reading. `Enter` gives the keyboard back to the text, `O` gives it to the outline again, and `O` from the outline closes it. In either, `c` copies, with `s` and `l` taking the heading you're on |
+| `Enter` `l` `→` | Follow the highlighted link |
 | `f` | Follow a link: type the letters drawn on it |
 | `L` | Links: what this links to, and what links here (in this and the other popups: `↑` `↓` `j` `k` move, `/` filters, `Enter` goes) |
 | `Esc` `Backspace` `←` `h` | Back to where you were before following a link; then the list |
@@ -141,7 +142,7 @@ Anywhere:
 | `Ctrl-W` | Scroll the source side or the rendered side (or click the side) |
 | `<` `>` | Move the divider |
 | `e` | Edit the file in `$VISUAL` or `$EDITOR`, at the line you're reading |
-| `c` | Copy: then `c` a code block, `s` the section, `a` the whole document, `v` a selection, `l` a link to the section, `p` the path, `P` the full path (see [Copying](#copying)) |
+| `c` | Copy: then `u` the highlighted link, `c` a code block, `s` the section, `a` the whole document, `v` a selection, `l` a link to the section, `p` the path, `P` the full path (see [Copying](#copying)) |
 | `\` | Keep the file list on screen while reading |
 | `T` | Pick a color theme |
 | `?` | All of the above |
@@ -154,6 +155,8 @@ The mouse works too: the wheel scrolls what's under it, the scrollbar and the ou
 ### Links between documents
 
 The header shows how the document on screen is connected, like `3 linked docs · linked from 2`, and `L` lists those documents with their titles, along with links to sections, other files and the web. Following a link to another Markdown file opens it in `lsmd`. Web and email links open in your browser or mail app after you confirm, with the site named in the question, or you can copy the address instead; images, PDFs and other documents open in their default app the same way. `lsmd` won't open anything else a link points to, such as a program, a script or another app's link, since the documents you read may be someone else's.
+
+As you read, the link you're reading by is highlighted, with where it goes in the footer, ready for `Enter` (or `l` or `→`) to follow it and `Esc` (or `h` or `←`) to come back. It's the one nearest a band a third of the way down the screen, which starts at the top of the screen and ends at the bottom, so even the first and last links get their turn. `↓` and `↑` scroll as usual, but where links come close together, side by side or a line after another, they go link to link first, so none is skipped; in a document that fits on the screen, they go from link to link. `f` or a click still gets any link at once.
 
 "Linked from" comes from an index of the links between all the Markdown files under the directory you're browsing. It's built in the background when `lsmd` starts, kept up to date as files change, and saved in `~/.lsmd/index/` so the next start only re-reads files that changed.
 

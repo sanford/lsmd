@@ -116,6 +116,12 @@ pub struct Doc {
     /// Rendered lines shown selected, first and last, while choosing what
     /// to copy.
     pub selection: Option<(usize, usize)>,
+    /// Whether the reading band shows its link: only while the document
+    /// has the keyboard.
+    pub band: bool,
+    /// The line `j` and `k` have taken the band to, and which of the links
+    /// starting on it.
+    band_at: Option<(usize, usize)>,
     /// A heading to jump to once the document is laid out.
     pending_anchor: Option<String>,
     /// A search match to jump to once the document is laid out: its source
@@ -165,6 +171,8 @@ impl Doc {
             search: None,
             hints: Vec::new(),
             selection: None,
+            band: false,
+            band_at: None,
             pending_anchor: None,
             pending_match: None,
             keep: None,
@@ -472,12 +480,13 @@ impl Doc {
     fn draw_rendered(&mut self, f: &mut Frame, area: Rect) {
         self.rendered_area = area;
         let width = usize::from(area.width);
+        let link = self.band_stop().map(|l| l.id);
         let visible: Vec<Line> = self.lines[self.top..]
             .iter()
             .take(self.height)
             .enumerate()
             .map(|(i, l)| {
-                let line = self.highlighted(self.top + i, l);
+                let line = self.highlighted(self.top + i, l, link);
                 Line::from(line.spans)
             })
             .collect();
@@ -606,13 +615,20 @@ impl Doc {
         trail.iter().map(|h| h.text.as_str()).collect()
     }
 
-    /// Line `i` with any search matches on it highlighted.
-    fn highlighted(&self, i: usize, line: &RLine) -> RLine {
+    /// Line `i` with the band's link (by id) reversed, and any search
+    /// matches on it highlighted.
+    fn highlighted(&self, i: usize, line: &RLine, link: Option<u32>) -> RLine {
+        let mut line = line.clone();
+        for l in &line.links {
+            if Some(l.id) == link {
+                let style = Style::new().add_modifier(Modifier::REVERSED);
+                line.spans = wrap::restyle(line.spans, l.start, l.end, style);
+            }
+        }
         let Some(search) = &self.search else {
-            return line.clone();
+            return line;
         };
         let first = search.matches.partition_point(|m| m.0 < i);
-        let mut line = line.clone();
         for (n, &(_, start, end)) in search.matches[first..]
             .iter()
             .take_while(|m| m.0 == i)
@@ -1101,6 +1117,169 @@ impl Doc {
             .collect();
     }
 
+    /// The target of the link the reading band's on, while it shows.
+    pub fn band_link(&self) -> Option<String> {
+        self.band_stop().map(|l| l.url)
+    }
+
+    /// The link the reading band's on, while it shows: not while choosing a
+    /// link by its letters or lines to copy.
+    fn band_stop(&self) -> Option<LinkStop> {
+        if !self.band || !self.hints.is_empty() || self.selection.is_some() {
+            return None;
+        }
+        let (line, n) = self.band_place()?;
+        let mut stops = self.band_stops(line);
+        Some(stops.swap_remove(n.min(stops.len() - 1)))
+    }
+
+    /// Where the band's on: a line with links starting on it, and which of
+    /// them. The one `j` and `k` came to, while it's near the band; or else
+    /// the line nearest it, at its first link.
+    fn band_place(&self) -> Option<(usize, usize)> {
+        let (band, near) = self.band_window()?;
+        if let Some((line, n)) = self.band_at
+            && near.contains(&line)
+            && self.starts_links(line)
+        {
+            return Some((line, n));
+        }
+        let line = near
+            .filter(|&i| self.starts_links(i))
+            .min_by_key(|&i| i.abs_diff(band))?;
+        Some((line, 0))
+    }
+
+    /// The line the band's on, and the lines near enough it to count, on
+    /// screen: all of them when there's no scrolling, for `j` and `k` to go
+    /// to each link in turn.
+    fn band_window(&self) -> Option<(usize, std::ops::Range<usize>)> {
+        /// How far from the band a link can be: far enough that one scroll
+        /// never carries a link past it unseen.
+        const REACH: usize = 2;
+        let band = self.band_line()?;
+        let bottom = (self.top + self.height).min(self.lines.len());
+        if self.lines.len() <= self.height {
+            return Some((band, self.top..bottom));
+        }
+        let from = self.top.max(band.saturating_sub(REACH));
+        Some((band, from..bottom.min(band + REACH + 1)))
+    }
+
+    /// Whether line `i` has links on it, links wrapped onto it from the
+    /// line above aside: those start there, or at the top of the screen.
+    fn starts_links(&self, i: usize) -> bool {
+        self.lines[i].links.iter().any(|l| self.starts_on(i, l.id))
+    }
+
+    fn starts_on(&self, i: usize, id: u32) -> bool {
+        i == self.top || !self.lines[i - 1].links.iter().any(|l| l.id == id)
+    }
+
+    /// The links starting on line `i`, in order, each target once.
+    fn band_stops(&self, i: usize) -> Vec<LinkStop> {
+        let mut stops: Vec<LinkStop> = Vec::new();
+        for l in &self.lines[i].links {
+            let url = &self.links[l.id as usize];
+            if !self.starts_on(i, l.id) || stops.iter().any(|s| s.id == l.id || &s.url == url) {
+                continue;
+            }
+            stops.push(LinkStop {
+                id: l.id,
+                url: url.clone(),
+            });
+        }
+        stops
+    }
+
+    /// The next line of links after `from` (or before, going back) that's
+    /// near the band; from nowhere, the first (or last) of them.
+    fn next_band_line(&self, forward: bool, from: Option<usize>) -> Option<usize> {
+        let (_, near) = self.band_window()?;
+        if forward {
+            let start = from.map_or(near.start, |l| (l + 1).max(near.start));
+            (start..near.end).find(|&i| self.starts_links(i))
+        } else {
+            let end = from.map_or(near.end, |l| l.min(near.end));
+            (near.start..end).rev().find(|&i| self.starts_links(i))
+        }
+    }
+
+    /// Puts the band on line `i`: at its first link, or coming up to it,
+    /// its last.
+    fn band_onto(&mut self, i: usize, forward: bool) {
+        let n = if forward {
+            0
+        } else {
+            self.band_stops(i).len() - 1
+        };
+        self.band_at = Some((i, n));
+    }
+
+    /// Onto the next or previous link near the band, along its line and
+    /// then on to the next line of them, so none is skipped. Returns false
+    /// when there's none, to scroll on.
+    fn band_step(&mut self, forward: bool) -> bool {
+        let place = self.band_place();
+        if let Some((line, n)) = place {
+            let next = if forward { n + 1 } else { n.wrapping_sub(1) };
+            if next < self.band_stops(line).len() {
+                self.band_at = Some((line, next));
+                return true;
+            }
+        }
+        match self.next_band_line(forward, place.map(|p| p.0)) {
+            Some(i) => {
+                self.band_onto(i, forward);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The line the reading band's on. It reads a third of the way down
+    /// the screen, but starts at the top and ends at the bottom, sliding to
+    /// and from there over the first and last screenful of scrolling, so
+    /// every line passes through it.
+    fn band_line(&self) -> Option<usize> {
+        let end = self.lines.len();
+        let last = end.checked_sub(1)?;
+        let height = self.height.max(1);
+        // How far the document scrolls before its last line's at the bottom.
+        let scroll = end.saturating_sub(height);
+        let top = self.top;
+        if top >= scroll {
+            return Some(if scroll == 0 { top } else { last });
+        }
+        let row = height / 3;
+        let slide = height - 1 - row;
+        Some(if scroll < row + slide {
+            // Too short to settle: it slides the whole way.
+            top * last / scroll
+        } else if top < row {
+            top * 2
+        } else if top + slide > scroll {
+            top + row + (top + slide - scroll)
+        } else {
+            top + row
+        })
+    }
+
+    /// `j` or `k` on the rendered side: along the links near the reading
+    /// band first, where they come close together, so none is skipped;
+    /// otherwise a scroll of `by` lines, the band going on from where it
+    /// was.
+    pub fn step(&mut self, forward: bool, by: isize) {
+        if self.band && self.band_step(forward) {
+            return;
+        }
+        let from = self.band_place().map(|p| p.0);
+        self.scroll_by(if forward { by } else { -by }, Side::Rendered);
+        if let Some(i) = self.next_band_line(forward, from) {
+            self.band_onto(i, forward);
+        }
+    }
+
     pub fn scroll_by(&mut self, delta: isize, side: Side) {
         self.lead = side;
         let max = self.max_top(side);
@@ -1140,6 +1319,14 @@ impl Doc {
             format!("{}%", (top + self.height) * 100 / len)
         }
     }
+}
+
+/// A link the reading band can be on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LinkStop {
+    /// Its id in the document's links.
+    id: u32,
+    url: String,
 }
 
 /// Groups rendered lines into the top-level blocks they came from.
@@ -1217,6 +1404,132 @@ mod tests {
         // Into it from outside, all of it.
         assert_eq!(text(b, x), "- b\n\n```sh\nx\ny\n```\n");
         assert_eq!(text(y, 7), "```sh\nx\ny\n```\n\n### Deeper\n");
+    }
+
+    /// A document with a link every few lines, the first on its first line
+    /// and the last on its last.
+    fn linked(height: usize) -> (Doc, Vec<String>) {
+        let mut urls: Vec<String> = (0..12)
+            .map(|n| format!("https://example.com/{n}"))
+            .collect();
+        let md: Vec<String> = urls
+            .iter()
+            .enumerate()
+            .map(|(n, url)| format!("[link {n}](<{url}>)\n\nfiller\n\nmore filler"))
+            .collect();
+        let mut md = md.join("\n\n");
+        md.push_str("\n\n[end](<https://example.com/end>)\n");
+        urls.push("https://example.com/end".into());
+        let mut doc = Doc::new(md);
+        doc.layout(30, &Theme::plain());
+        doc.height = height;
+        doc.band = true;
+        (doc, urls)
+    }
+
+    /// The links the band's on, in turn, scrolling `by` at a time to the
+    /// end, or with `by` negative, the top.
+    fn band_links(doc: &mut Doc, by: isize) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        loop {
+            if let Some(url) = doc.band_link()
+                && seen.last() != Some(&url)
+            {
+                seen.push(url);
+            }
+            let end = if by > 0 {
+                doc.max_top(Side::Rendered)
+            } else {
+                0
+            };
+            if doc.top == end {
+                return seen;
+            }
+            doc.scroll_by(by, Side::Rendered);
+        }
+    }
+
+    #[test]
+    fn the_band_comes_to_every_link_as_it_scrolls() {
+        for by in [1, 2] {
+            let (mut doc, urls) = linked(10);
+            assert!(doc.max_top(Side::Rendered) > 20, "scrolls a good way");
+            assert_eq!(
+                doc.band_link().as_ref(),
+                Some(&urls[0]),
+                "the first at the top"
+            );
+            assert_eq!(band_links(&mut doc, by), urls, "scrolling {by} at a time");
+            let mut up = band_links(&mut doc, -by);
+            up.reverse();
+            assert_eq!(up, urls, "scrolling back {by} at a time");
+        }
+        // Not while something else has the keyboard.
+        let (mut doc, _) = linked(10);
+        doc.band = false;
+        assert_eq!(doc.band_link(), None);
+    }
+
+    #[test]
+    fn j_and_k_go_to_every_link_in_a_document_that_fits() {
+        let (mut doc, urls) = linked(200);
+        assert_eq!(doc.band_link().as_ref(), Some(&urls[0]));
+        let mut seen = vec![doc.band_link().unwrap()];
+        for _ in 1..urls.len() {
+            doc.step(true, 2);
+            seen.push(doc.band_link().unwrap());
+        }
+        assert_eq!(seen, urls);
+        doc.step(false, 2);
+        assert_eq!(doc.band_link().as_ref(), urls.iter().rev().nth(1));
+    }
+
+    #[test]
+    fn j_and_k_go_along_a_line_of_links_in_the_band() {
+        // Side by side, and wrapped to a line each.
+        for width in [100, 30] {
+            let mut md = String::new();
+            let mut urls = Vec::new();
+            for n in 0..8 {
+                let line: Vec<String> = (0..if n % 2 == 0 { 3 } else { 1 })
+                    .map(|k| {
+                        let url = format!("https://example.com/{n}/{k}");
+                        urls.push(url.clone());
+                        format!("[l{n}{k}](<{url}>)")
+                    })
+                    .collect();
+                md.push_str(&format!(
+                    "{}\n\nfiller\n\nmore\n\nand more\n\n",
+                    line.join(" ")
+                ));
+            }
+            let mut doc = Doc::new(md);
+            doc.layout(width, &Theme::plain());
+            doc.height = 10;
+            doc.band = true;
+            assert_eq!(doc.lines[0].links.len(), if width > 90 { 3 } else { 1 });
+            for forward in [true, false] {
+                let mut seen = Vec::new();
+                for _ in 0..200 {
+                    if let Some(u) = doc.band_link()
+                        && seen.last() != Some(&u)
+                    {
+                        seen.push(u);
+                    }
+                    doc.step(forward, 2);
+                }
+                let end = if forward {
+                    doc.max_top(Side::Rendered)
+                } else {
+                    0
+                };
+                assert_eq!(doc.top, end, "came to the end");
+                if !forward {
+                    seen.reverse();
+                }
+                assert_eq!(seen, urls, "width {width}, forward {forward}");
+            }
+        }
     }
 
     fn laid_out(width: usize) -> Doc {

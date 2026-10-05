@@ -818,6 +818,14 @@ impl App {
         }
     }
 
+    /// The target of the link the reading band's on, reading.
+    pub(super) fn band_link(&mut self) -> Option<String> {
+        if self.focus != Focus::Reader {
+            return None;
+        }
+        self.current()?.band_link()
+    }
+
     fn select_by(&mut self, delta: isize) {
         if self.shown.is_empty() {
             return;
@@ -1120,9 +1128,17 @@ impl App {
                 self.list_in_reader = !self.list_in_reader;
                 return false;
             }
+            // On the reading band's link, follows it.
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(url) = self.band_link() {
+                    self.follow(&url);
+                    return false;
+                }
+            }
             _ => {}
         }
         let side = self.side();
+        let rendered = side == Side::Rendered;
         let lines = self.scroll as isize;
         let Some(doc) = self.current() else {
             return false;
@@ -1140,6 +1156,8 @@ impl App {
             KeyCode::Char('u') if ctrl => doc.scroll_by(-half, side),
             KeyCode::Char('f') if ctrl => doc.scroll_by(page, side),
             KeyCode::Char('b') if ctrl => doc.scroll_by(-page, side),
+            KeyCode::Char('j') | KeyCode::Down if rendered => doc.step(true, lines),
+            KeyCode::Char('k') | KeyCode::Up if rendered => doc.step(false, lines),
             KeyCode::Char('j') | KeyCode::Down | KeyCode::Enter => doc.scroll_by(lines, side),
             KeyCode::Char('k') | KeyCode::Up => doc.scroll_by(-lines, side),
             KeyCode::Char('d') => doc.scroll_by(half, side),
@@ -1460,7 +1478,10 @@ impl App {
             numbers: self.numbers,
         });
         let numbers = self.numbers;
+        // The reading band's link shows only while the text has the keyboard.
+        let band = self.focus == Focus::Reader && self.outline_focus.is_none();
         if let Some(doc) = self.current() {
+            doc.band = band;
             if let Some(split) = split {
                 doc.draw_split(f, area, &split, &theme);
             } else {
@@ -1591,6 +1612,8 @@ impl App {
             self.back_label()
         };
         let source = ("S", if self.split { "hide source" } else { "source" });
+        // On a link: where it goes, and what to do with it.
+        let link = self.band_link();
         let mut reader = vec![
             ("↑↓", "scroll"),
             ("/", "search"),
@@ -1645,6 +1668,14 @@ impl App {
                 keys.extend([("?", "help"), ("q", "quit")]);
                 keys
             }
+            // On a link, fewer, to leave room for where it goes.
+            Focus::Reader if link.is_some() => vec![
+                ("⏎", "go"),
+                ("c", "copy"),
+                ("↑↓", "next"),
+                ("esc", back.as_str()),
+                ("?", "help"),
+            ],
             Focus::Reader => {
                 reader.extend([("esc", back.as_str()), ("?", "help"), ("q", "quit")]);
                 reader
@@ -1667,12 +1698,44 @@ impl App {
         let pos_width = wrap::width(&position) as u16 + 3;
         let [keys_area, pos_area] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(pos_width)]).areas(area);
+        // The link's target before the keys, cut short to leave them room.
+        let room = usize::from(keys_area.width).saturating_sub(wrap::spans_width(&spans) + 2);
+        if let Some(url) = link
+            && room >= 12
+        {
+            let short = url.strip_prefix("https://").unwrap_or(&url);
+            let short = short.strip_prefix("www.").unwrap_or(short);
+            spans.insert(
+                1,
+                Span::raw(fit(&crate::safe::printable(short), room)).underlined(),
+            );
+            spans.insert(2, Span::raw("  "));
+        }
         f.render_widget(Paragraph::new(Line::from(spans)), keys_area);
         f.render_widget(
             Paragraph::new(Line::from(format!("{position} ")).dim()).right_aligned(),
             pos_area,
         );
     }
+}
+
+/// `s` cut short with a `…` to fit in `room` columns.
+fn fit(s: &str, room: usize) -> String {
+    if wrap::width(s) <= room {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = char_width(c);
+        if used + w + 1 > room {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
 }
 
 /// A long path shows at least this many characters of its file name beside
@@ -1835,6 +1898,7 @@ fn draw_help(f: &mut Frame) {
         ("c", "Copy: code, section, all, a selection, link, path"),
         ("/ n N", "Search; next / previous match"),
         ("^s ^r", "Search forward / back; typing: next / previous"),
+        ("⏎ l →", "Follow the highlighted link (esc h ← come back)"),
         ("f", "Follow a link (type the letters shown on it)"),
         ("⇧↓ ⇧↑ J K", "Page down / up"),
         ("space b", "Page down / up (the preview, in the list)"),
@@ -2292,6 +2356,41 @@ mod tests {
         let mut app = scanned(&dir, None);
         app.key(KeyEvent::from(KeyCode::Char('S')));
         assert!(app.split);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Enter (or l) on the highlighted link follows it, and the text
+    /// shows where it goes until then; Esc (or h) comes back.
+    #[test]
+    fn enter_follows_the_highlighted_link() {
+        let dir = std::env::temp_dir().join(format!("lsmd-band-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.md"), "# A\n\n[to b](b.md)\n").unwrap();
+        std::fs::write(dir.join("b.md"), "# B\n").unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        for (go, back) in [
+            (KeyCode::Enter, KeyCode::Esc),
+            (KeyCode::Char('l'), KeyCode::Char('h')),
+        ] {
+            let mut app = scanned(&dir, None);
+            app.list
+                .select(app.row_of(&tree::Pick::File(dir.join("a.md"))));
+            // Previewed beside the list, there's no band.
+            term.draw(|f| app.draw(f)).unwrap();
+            assert_eq!(app.current().and_then(|d| d.band_link()), None);
+            app.key(KeyEvent::from(KeyCode::Tab));
+            term.draw(|f| app.draw(f)).unwrap();
+            assert_eq!(app.band_link().as_deref(), Some("b.md"));
+            let buf = term.backend().buffer();
+            let footer: String = (0..80).map(|x| buf[(x, 19)].symbol().to_string()).collect();
+            assert!(footer.starts_with(" b.md  ⏎ go  c copy"), "{footer}");
+            app.key(KeyEvent::from(go));
+            assert_eq!(app.reading, Some(dir.join("b.md")));
+            app.key(KeyEvent::from(back));
+            assert_eq!(app.reading, Some(dir.join("a.md")));
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

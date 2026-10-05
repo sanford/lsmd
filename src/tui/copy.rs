@@ -45,6 +45,15 @@ impl App {
         let heading = heading.or_else(|| doc.current_heading());
         let mut items = Vec::new();
 
+        // The link the reading band's on, first.
+        if let Some(url) = doc.band_link() {
+            let action = Action::Copy {
+                text: url.clone(),
+                what: url.clone(),
+            };
+            items.push(Item::new('u', "Highlighted link", url, action));
+        }
+
         let code = doc.code_on_screen();
         items.push(match code[..] {
             [] => Item::off('c', "Code block", "none on screen"),
