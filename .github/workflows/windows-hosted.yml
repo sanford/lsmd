@@ -1,0 +1,42 @@
+name: Windows (GitHub-hosted)
+
+# Stands in for CI's Windows job while the self-hosted runner is offline:
+# builds and tests a tag on GitHub's own Windows runner, and keeps lsmd.exe
+# as an artifact, to zip and attach to the release by hand. Nothing is
+# published. Run by hand:
+#   gh workflow run windows-hosted.yml -f tag=v0.9.0
+# Temporary: remove it once the self-hosted runner is back.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build, like v0.9.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          ref: ${{ inputs.tag }}
+      - run: cargo test --locked --release
+      - run: cargo clippy --locked --release --all-targets -- -D warnings
+      - run: cargo build --locked --release
+      # The version it says it is.
+      - env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          $v = & target/release/lsmd.exe --version
+          if ($v -ne "lsmd $($env:TAG.TrimStart('v'))") { throw "says $v" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: lsmd-windows-x64
+          path: target/release/lsmd.exe
+          if-no-files-found: error
