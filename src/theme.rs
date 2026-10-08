@@ -90,6 +90,10 @@ pub struct Theme {
     /// Code colors made from an Omarchy palette, instead of the built-in
     /// syntax theme.
     pub syntax: Option<SyntaxTheme>,
+    /// Links' color, and the text's on it when the reading band's on one.
+    /// `None` uses the terminal's blue, which in some terminals' default
+    /// colors is too dark to read: only for a palette chosen with it.
+    link: Option<(Color, Color)>,
     paint: Option<Paint>,
 }
 
@@ -113,6 +117,7 @@ impl Theme {
             code_bg: None,
             frame: None,
             syntax: None,
+            link: None,
             paint: None,
         };
         if let Some(p) = palette {
@@ -124,6 +129,11 @@ impl Theme {
                 theme.rgb(0x2b, 0x2f, 0x37)
             } else {
                 theme.rgb(0xee, 0xee, 0xee)
+            });
+            theme.link = Some(if dark {
+                (theme.rgb(0x6c, 0xb6, 0xff), theme.rgb(0x0d, 0x11, 0x17))
+            } else {
+                (theme.rgb(0x09, 0x69, 0xda), theme.rgb(0xff, 0xff, 0xff))
             });
         }
         theme
@@ -139,6 +149,7 @@ impl Theme {
             code_bg: None,
             frame: None,
             syntax: None,
+            link: None,
             paint: None,
         }
     }
@@ -215,9 +226,16 @@ impl Theme {
     }
 
     pub fn link(&self) -> Style {
-        self.s(Style::new()
-            .fg(Color::Blue)
-            .add_modifier(Modifier::UNDERLINED))
+        let fg = self.link.map_or(Color::Blue, |(link, _)| link);
+        self.s(Style::new().fg(fg).add_modifier(Modifier::UNDERLINED))
+    }
+
+    /// The link the reading band's on.
+    pub fn band_link(&self) -> Style {
+        match self.link {
+            Some((link, on)) if self.color => Style::new().fg(on).bg(link),
+            _ => Style::new().add_modifier(Modifier::REVERSED),
+        }
     }
 
     pub fn broken_link(&self) -> Style {

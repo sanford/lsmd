@@ -393,7 +393,7 @@ impl Doc {
         self.sync(false);
         self.lead = Side::Rendered;
         self.source_area = Rect::default();
-        self.draw_rendered(f, area);
+        self.draw_rendered(f, area, theme);
         self.draw_numbers(f, numbers_area, theme);
     }
 
@@ -473,11 +473,11 @@ impl Doc {
         self.draw_source(f, source_area, split.focus == Side::Source, theme);
         let bar = vec![Line::from("│".dim()); area.height.into()];
         f.render_widget(Paragraph::new(bar), bar_area);
-        self.draw_rendered(f, rendered_area);
+        self.draw_rendered(f, rendered_area, theme);
         self.draw_numbers(f, numbers_area, theme);
     }
 
-    fn draw_rendered(&mut self, f: &mut Frame, area: Rect) {
+    fn draw_rendered(&mut self, f: &mut Frame, area: Rect, theme: &Theme) {
         self.rendered_area = area;
         let width = usize::from(area.width);
         let link = self.band_stop().map(|l| l.id);
@@ -486,7 +486,7 @@ impl Doc {
             .take(self.height)
             .enumerate()
             .map(|(i, l)| {
-                let line = self.highlighted(self.top + i, l, link);
+                let line = self.highlighted(self.top + i, l, link, theme);
                 Line::from(line.spans)
             })
             .collect();
@@ -615,13 +615,13 @@ impl Doc {
         trail.iter().map(|h| h.text.as_str()).collect()
     }
 
-    /// Line `i` with the band's link (by id) reversed, and any search
-    /// matches on it highlighted.
-    fn highlighted(&self, i: usize, line: &RLine, link: Option<u32>) -> RLine {
+    /// Line `i` with the band's link (by id) highlighted, and any search
+    /// matches on it.
+    fn highlighted(&self, i: usize, line: &RLine, link: Option<u32>, theme: &Theme) -> RLine {
         let mut line = line.clone();
         for l in &line.links {
             if Some(l.id) == link {
-                let style = Style::new().add_modifier(Modifier::REVERSED);
+                let style = theme.band_link();
                 line.spans = wrap::restyle(line.spans, l.start, l.end, style);
             }
         }
