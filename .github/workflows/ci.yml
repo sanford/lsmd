@@ -25,6 +25,8 @@ jobs:
     steps:
       - run: echo "Approved for ${{ github.triggering_actor }}"
 
+  # windows-hosted.yml runs the same steps on GitHub's runner, as a
+  # fallback: keep their steps matching.
   windows:
     needs: approve
     if: ${{ !cancelled() && (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
