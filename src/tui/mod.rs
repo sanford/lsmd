@@ -2347,7 +2347,7 @@ mod tests {
 
             // Choosing another file in the list ends that.
             app.key(tab);
-            app.select_by(1);
+            app.select_by(-1);
             assert!(!app.kept());
             let selected = app.selected().map(|e| e.path.clone());
             assert_eq!(app.current_path(), selected);
@@ -2356,6 +2356,44 @@ mod tests {
         let mut app = scanned(&dir, None);
         app.key(KeyEvent::from(KeyCode::Char('S')));
         assert!(app.split);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Following a link selects where it went in the list, going to its
+    /// folder and dropping a filter if need be; going back selects where
+    /// it came from.
+    #[test]
+    fn the_list_follows_links() {
+        let dir = std::env::temp_dir().join(format!("lsmd-reveal-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        std::fs::write(dir.join("docs/a.md"), "# A\n\n[to b](../notes/b.md)\n").unwrap();
+        std::fs::write(dir.join("docs/c.md"), "# C\n").unwrap();
+        std::fs::write(dir.join("notes/b.md"), "# B\n\n[to c](../docs/c.md)\n").unwrap();
+        let dir = std::fs::canonicalize(&dir).unwrap();
+        let mut app = scanned(&dir, None);
+        let picked = |app: &App| app.selected().map(|e| e.path.clone());
+
+        app.list
+            .select(app.row_of(&tree::Pick::Dir("docs/".into())));
+        app.enter_dir();
+        app.list
+            .select(app.row_of(&tree::Pick::File(dir.join("docs/a.md"))));
+        app.key(KeyEvent::from(KeyCode::Tab));
+        app.follow("../notes/b.md");
+        assert_eq!(app.scope(), "notes/");
+        assert_eq!(picked(&app), Some(dir.join("notes/b.md")));
+
+        // Hidden by a filter: the filter goes.
+        app.filter = "zzz".into();
+        app.refresh();
+        app.follow("../docs/c.md");
+        assert_eq!(app.filter, "");
+        assert_eq!(picked(&app), Some(dir.join("docs/c.md")));
+
+        app.key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.reading, Some(dir.join("notes/b.md")));
+        assert_eq!(picked(&app), Some(dir.join("notes/b.md")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

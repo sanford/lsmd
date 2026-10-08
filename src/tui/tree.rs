@@ -12,7 +12,7 @@ use nucleo_matcher::{Matcher, Utf32Str};
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use std::collections::{BTreeMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// While filtering, the most folders to show above the matching files.
@@ -367,6 +367,40 @@ impl App {
                 Shown::Up(_) | Shown::Rule(_) => false,
             })
         })
+    }
+
+    /// Selects `path` in the list, so it shows the document a link went
+    /// to: going to its folder if it's outside the one listed, and dropping
+    /// a filter that hides it. Files the list doesn't have stay unselected.
+    pub(super) fn reveal(&mut self, path: &Path) {
+        let row = |app: &App| {
+            app.shown.iter().position(
+                |s| matches!(s, Shown::File { file, .. } if app.files[*file].path == path),
+            )
+        };
+        if row(self).is_none() {
+            let Some(rel) = self.files.iter().find(|e| e.path == path) else {
+                // Not found yet: selected when the scan finds it.
+                if self.scan.is_some() {
+                    self.want = Some(path.to_path_buf());
+                }
+                return;
+            };
+            if !rel.rel.starts_with(&self.scope) {
+                self.scope = rel
+                    .rel
+                    .rsplit_once('/')
+                    .map_or(String::new(), |(dir, _)| format!("{dir}/"));
+            }
+            self.filter.clear();
+            self.typing = false;
+            self.filter_changed();
+            self.refresh();
+        }
+        if let Some(i) = row(self) {
+            self.list.select(Some(i));
+            self.moved = true;
+        }
     }
 
     /// `Space` on a folder: opens or closes it in place, to see what's in

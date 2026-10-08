@@ -280,6 +280,9 @@ impl App {
         let Some(place) = self.history.pop() else {
             return;
         };
+        if let Some(path) = &place.path {
+            self.reveal(path);
+        }
         self.reading = place.path;
         if let Some(doc) = self.current() {
             doc.jump_to(place.top);
@@ -378,6 +381,7 @@ impl App {
         if let Some(here) = here.filter(|h| h.path.as_ref() != Some(&target)) {
             self.history.push(here);
         }
+        self.reveal(&target);
         self.reading = Some(target.clone());
         self.focus = Focus::Reader;
         let doc = self.doc(&target);
