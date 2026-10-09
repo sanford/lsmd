@@ -36,8 +36,8 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant, SystemTime};
 
-/// A terminal this wide keeps the file list beside a document `Tab` opens.
-const WIDE: u16 = 110;
+/// A terminal this wide shows the file list beside the document or preview.
+const WIDE: u16 = 80;
 
 /// How long pictures wait after moving before they're drawn in full.
 const FIGURE_SETTLE: Duration = Duration::from_millis(150);
@@ -1183,7 +1183,7 @@ impl App {
         self.list_area = Rect::default();
         let reader_only =
             self.text.is_some() || (self.focus == Focus::Reader && !self.list_in_reader);
-        let narrow = body.width < 80;
+        let narrow = body.width < WIDE;
         self.body_width = body.width;
         if reader_only || (narrow && self.focus == Focus::Reader) {
             // One column of margin on each side.
@@ -2323,7 +2323,7 @@ mod tests {
         std::fs::write(dir.join("b.md"), "# B\n").unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         let tab = KeyEvent::from(KeyCode::Tab);
-        for (width, beside) in [(110, true), (109, false)] {
+        for (width, beside) in [(WIDE, true), (WIDE - 1, false)] {
             let mut app = scanned(&dir, None);
             app.body_width = width;
             app.list
