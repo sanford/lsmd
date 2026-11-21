@@ -354,7 +354,7 @@ impl Renderer<'_> {
                 self.gap();
             }
             NodeValue::HtmlBlock(html) => self.html_block(&html.literal),
-            NodeValue::ThematicBreak => {
+            NodeValue::ThematicBreak(_) => {
                 let rule = "─".repeat(self.avail());
                 self.emit(vec![Span::styled(rule, self.theme.dim())]);
                 self.gap();
@@ -441,6 +441,8 @@ impl Renderer<'_> {
             AlertType::Important => "Important",
             AlertType::Warning => "Warning",
             AlertType::Caution => "Caution",
+            // Any kind added later reads as a note.
+            _ => "Note",
         });
         let title_style = self.theme.modifier(style, Modifier::BOLD);
         self.para(&[Piece::Text(title.to_string(), title_style)]);
@@ -783,7 +785,7 @@ impl Renderer<'_> {
         let rows: Vec<(bool, Vec<Vec<Piece>>)> = node
             .children()
             .map(|row| {
-                let header = matches!(row.data().value, NodeValue::TableRow(true));
+                let header = matches!(row.data().value, NodeValue::TableRow(ref r) if r.header);
                 let base = if header {
                     header_style
                 } else {
@@ -912,9 +914,9 @@ impl Renderer<'_> {
                 math.literal.clone(),
                 style.patch(theme.inline_code()),
             )),
-            NodeValue::Emph => self.inline_children(node, styled(Modifier::ITALIC), out),
-            NodeValue::Strong => self.inline_children(node, styled(Modifier::BOLD), out),
-            NodeValue::Strikethrough => {
+            NodeValue::Emph(_) => self.inline_children(node, styled(Modifier::ITALIC), out),
+            NodeValue::Strong(_) => self.inline_children(node, styled(Modifier::BOLD), out),
+            NodeValue::Strikethrough(_) => {
                 self.inline_children(node, styled(Modifier::CROSSED_OUT), out)
             }
             NodeValue::Underline | NodeValue::Insert => {

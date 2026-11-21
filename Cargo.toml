@@ -20,7 +20,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 # --completions and --man.
 clap_complete = "4.6.11"
 clap_mangen = "0.3.3"
-comrak = { version = "0.55.0", default-features = false }
+comrak = { version = "1.1.0", default-features = false }
 ignore = "0.4.33"
 nucleo-matcher = "0.3.1"
 ratatui = "0.30.2"
@@ -31,6 +31,7 @@ unicode-segmentation = "1.13.3"
 unicode-width = "0.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# Its notify is omarchy-themes's (8): keep in step, or both versions get built.
 notify-debouncer-mini = "0.7.0"
 toml = "1.1.6"
 # Pinned: new and single-maintainer, so updates get read before they land.
@@ -42,6 +43,7 @@ mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
 resvg = { version = "0.47.0", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
 ratatui-image = { version = "11.1.0", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# usvg's (resvg 0.47, for mermaid-rs-renderer): keep in step.
 base64 = "0.22"
 
 [dev-dependencies]
