@@ -1,0 +1,111 @@
+name: Windows release
+
+# The Windows binary of a release, built from its tag on a fresh
+# GitHub-hosted VM and Authenticode-signed, as the `lsmd-windows-x64-signed`
+# artifact the release's zip is made from (RELEASING.md). Nothing is
+# published. Pushing a `v*` tag starts it; to run it again for a tag:
+#   gh workflow run windows-release.yml --ref vX.Y.Z
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build, like v1.2.3 (empty: the ref the run is on)"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  # Unsigned: `sign` signs it. This job can't, having no Azure login, and
+  # it's the only one that runs the code's build scripts and dependencies.
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - run: rustup update stable --no-self-update
+      - run: cargo test --locked --release
+      # From the repo root, so .cargo/config.toml links the C runtime statically.
+      - run: cargo build --locked --release
+      # The version it says it is.
+      - run: |
+          $v = & target/release/lsmd.exe --version
+          if ($v -ne "lsmd $($env:TAG.TrimStart('v'))") { throw "says $v" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: lsmd-windows-x64-unsigned
+          path: target/release/lsmd.exe
+          if-no-files-found: error
+
+  # Authenticode, by Azure Artifact Signing: the key never leaves Azure.
+  # Azure lets in a login from this repository's `release` environment
+  # alone (a federated credential of an app that may only sign), and that
+  # environment takes `v*` tags only and waits for the owner's approval.
+  # This job builds nothing and runs nothing from the repository. The
+  # account's details are the environment's variables.
+  sign:
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: lsmd-windows-x64-unsigned
+          path: ${{ runner.temp }}\stage
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      # With the signtool and Azure library that Velopack's vpk 1.2.161
+      # carries (vendor\signing), pinned and installed in this run's folder.
+      - name: Sign
+        env:
+          ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          PROFILE: ${{ vars.AZURE_SIGNING_PROFILE }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tools = "$env:RUNNER_TEMP\vpk-tool"
+          dotnet tool install vpk --tool-path $tools --version 1.2.161
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $signing = Get-ChildItem -Recurse -Directory "$tools\.store\vpk" | Where-Object { $_.FullName -like '*\vendor\signing' } | Select-Object -First 1
+          if (-not $signing) { throw "vpk 1.2.161 carries no vendor\signing" }
+          $meta = "$env:RUNNER_TEMP\artifact-signing.json"
+          @{ Endpoint = $env:ENDPOINT; CodeSigningAccountName = $env:ACCOUNT; CertificateProfileName = $env:PROFILE } |
+            ConvertTo-Json | Set-Content -Encoding utf8NoBOM $meta
+          & "$($signing.FullName)\signtool.exe" sign /fd SHA256 /tr http://timestamp.acs.microsoft.com /td SHA256 `
+            /dlib "$($signing.FullName)\Azure.CodeSigning.Dlib.dll" /dmdf $meta "$env:RUNNER_TEMP\stage\lsmd.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Signed by Awesome Machinery, and timestamped, so the signature stays
+      # good after the short-lived certificate expires.
+      - name: Check the signature
+        run: |
+          $s = Get-AuthenticodeSignature "$env:RUNNER_TEMP\stage\lsmd.exe"
+          Write-Host "$($s.Status)  $($s.SignerCertificate.Subject)  timestamped by: $($s.TimeStamperCertificate.Subject)"
+          if ($s.Status -ne 'Valid') { throw "not validly signed: $($s.StatusMessage)" }
+          if ($s.SignerCertificate.Subject -notlike '*O="Awesome Machinery, LLC"*') { throw "signed by someone else" }
+          if (-not $s.TimeStamperCertificate) { throw "not timestamped" }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: lsmd-windows-x64-signed
+          path: ${{ runner.temp }}\stage\lsmd.exe
+          if-no-files-found: error
