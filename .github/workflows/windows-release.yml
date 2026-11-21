@@ -30,6 +30,9 @@ jobs:
       run:
         shell: pwsh
     steps:
+      # The files as they are in the repo: GitHub's Windows image turns LF
+      # into CRLF on checkout, which tests reading them don't expect.
+      - run: git config --global core.autocrlf false
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
         with:
           ref: ${{ env.TAG }}
